@@ -13,6 +13,12 @@ const LIGHT_COLORS = {
   yellow: '#ffd600',
 }
 
+function phaseDirections(activeDir) {
+  return activeDir === 'north' || activeDir === 'south'
+    ? ['north', 'south']
+    : ['east', 'west']
+}
+
 function drawRoad(ctx, W, H) {
   // Background
   ctx.fillStyle = '#0d1420'
@@ -78,7 +84,7 @@ function drawRoad(ctx, W, H) {
 }
 
 function drawTrafficLight(ctx, x, y, phase, activeDir, lightDir) {
-  const isGreen = activeDir === lightDir
+  const isGreen = phaseDirections(activeDir).includes(lightDir)
   const r = 8
   const pad = 4
   const boxH = r * 6 + pad * 4
@@ -178,7 +184,7 @@ function drawQueueBar(ctx, queues, activeDir, W, H) {
 
   bars.forEach(({ dir, x, y, label }) => {
     const ratio = Math.min(1, queues[dir] / maxQ)
-    const isActive = activeDir === dir
+    const isActive = phaseDirections(activeDir).includes(dir)
 
     // Background bar
     ctx.fillStyle = '#ffffff10'
@@ -227,9 +233,8 @@ export default function IntersectionCanvas({ activeDir, phaseTimer, queues, vehi
     // Phase timer
     ctx.font = '700 28px JetBrains Mono, monospace'
     ctx.textAlign = 'center'
-    ctx.fillStyle = activeDir === 'north' ? DIR_COLORS.north :
-                    activeDir === 'south' ? DIR_COLORS.south :
-                    activeDir === 'east' ? DIR_COLORS.east : DIR_COLORS.west
+    const phase = phaseDirections(activeDir)
+    ctx.fillStyle = DIR_COLORS[phase[0]]
     ctx.shadowColor = ctx.fillStyle
     ctx.shadowBlur = 20
     ctx.fillText(phaseTimer, cx, cy + 12)
@@ -237,7 +242,7 @@ export default function IntersectionCanvas({ activeDir, phaseTimer, queues, vehi
 
     ctx.font = '500 9px Sora, sans-serif'
     ctx.fillStyle = '#ffffff50'
-    ctx.fillText(activeDir.toUpperCase() + ' GREEN', cx, cy + 26)
+    ctx.fillText(`${phase[0].toUpperCase()} + ${phase[1].toUpperCase()} GREEN`, cx, cy + 26)
 
     // Mode badge
     ctx.font = '600 10px JetBrains Mono, monospace'

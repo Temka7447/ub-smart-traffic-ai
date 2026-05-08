@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from backend.models.vehicle import Direction, Vehicle
 
 Mode = Literal["ai", "fixed"]
+SignalState = Literal["green", "yellow", "all_red"]
 
 
 class SignalCalculationRequest(BaseModel):
@@ -32,10 +33,10 @@ class SignalCalculationRequest(BaseModel):
 class SignalCalculationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    north: int = Field(ge=10, le=60)
-    south: int = Field(ge=10, le=60)
-    east: int = Field(ge=10, le=60)
-    west: int = Field(ge=10, le=60)
+    north: int = Field(ge=12, le=90)
+    south: int = Field(ge=12, le=90)
+    east: int = Field(ge=12, le=90)
+    west: int = Field(ge=12, le=90)
     mode: Mode
 
 
@@ -46,12 +47,13 @@ class SimulationStartRequest(BaseModel):
     peak_hour: bool | None = None
     heavy_north: bool | None = None
     bus_directions: list[str] | None = None
+    emergency_directions: list[str] | None = None
     reset: bool = False
     autostart: bool = True
 
-    @field_validator("bus_directions")
+    @field_validator("bus_directions", "emergency_directions")
     @classmethod
-    def validate_bus_directions(cls, value: list[str] | None) -> list[str] | None:
+    def validate_priority_directions(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
         allowed = {"north", "south", "east", "west"}
@@ -82,8 +84,11 @@ class IntersectionNode(BaseModel):
     col: int
     label: str
     queues: dict[str, int]
+    laneQueues: dict[str, int]
     activeDir: Direction
     timer: int
+    signalState: SignalState
+    greenTimes: dict[str, int]
 
 
 class ComparisonStats(BaseModel):
@@ -96,6 +101,9 @@ class ComparisonStats(BaseModel):
     aiSamples: int
     improvementPct: int
     totalPassed: int
+    throughputPerMinute: float
+    avgQueueDepth: float
+    queueStability: int
 
 
 class QueueHistoryResponse(BaseModel):
@@ -114,7 +122,9 @@ class SimulationState(BaseModel):
     speed: float
     activeDir: Direction
     phaseTimer: int
+    signalState: SignalState
     queues: dict[str, int]
+    laneQueues: dict[str, int]
     totalPassed: int
     waitTimes: dict[str, list[int]]
     vehicles: list[Vehicle]
@@ -125,3 +135,5 @@ class SimulationState(BaseModel):
     avgFixedWait: int
     avgAIWait: int
     busDirections: list[str]
+    emergencyDirections: list[str]
+    kpis: dict[str, float]

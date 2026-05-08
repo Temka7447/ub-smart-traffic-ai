@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from backend.main import app
 
 
-def test_calculate_signal_returns_ai_mode_and_valid_bounds() -> None:
+def test_calculate_signal_returns_ai_mode_and_new_bounds() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/signals/calculate",
@@ -22,10 +22,10 @@ def test_calculate_signal_returns_ai_mode_and_valid_bounds() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["mode"] == "ai"
-    assert 10 <= body["north"] <= 60
-    assert 10 <= body["south"] <= 60
-    assert 10 <= body["east"] <= 60
-    assert 10 <= body["west"] <= 60
+    assert 12 <= body["north"] <= 90
+    assert 12 <= body["south"] <= 90
+    assert 12 <= body["east"] <= 90
+    assert 12 <= body["west"] <= 90
 
 
 def test_calculate_signal_applies_bus_bonus_to_direction() -> None:
@@ -62,7 +62,7 @@ def test_calculate_signal_applies_bus_bonus_to_direction() -> None:
     assert with_bus["north"] > baseline["north"]
 
 
-def test_calculate_signal_zero_vehicles_still_returns_minimum_green() -> None:
+def test_calculate_signal_zero_vehicles_balances_cycle() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/signals/calculate",
@@ -78,10 +78,7 @@ def test_calculate_signal_zero_vehicles_still_returns_minimum_green() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["north"] == 10
-    assert body["south"] == 10
-    assert body["east"] == 10
-    assert body["west"] == 10
+    assert body["north"] == body["south"] == body["east"] == body["west"]
 
 
 def test_calculate_signal_rejects_invalid_bus_direction() -> None:

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "frontend": "vite",
-    "backend": "uvicorn backend.main:app --reload --port 8000",
+    "backend": "python -m uvicorn backend.main:app --reload --port 8000",
     "dev": "concurrently \"npm run frontend\" \"npm run backend\"",
     "build": "vite build",
     "preview": "vite preview"

@@ -9,6 +9,12 @@ const DIR_COLORS = {
 
 const DIRECTIONS = ['north', 'south', 'east', 'west']
 
+function phaseDirections(activeDir) {
+  return activeDir === 'north' || activeDir === 'south'
+    ? ['north', 'south']
+    : ['east', 'west']
+}
+
 function MiniIntersection({ intersection, size = 80 }) {
   const canvasRef = useRef(null)
   const { queues, activeDir, timer, label } = intersection
@@ -45,7 +51,7 @@ function MiniIntersection({ intersection, size = 80 }) {
     ]
 
     lightPositions.forEach(({ x, y, dir }) => {
-      const isGreen = activeDir === dir
+      const isGreen = phaseDirections(activeDir).includes(dir)
       ctx.beginPath()
       ctx.arc(x + 2, y + 2, 4, 0, Math.PI * 2)
       ctx.fillStyle = isGreen ? '#00e676' : '#ff1744'
@@ -58,7 +64,7 @@ function MiniIntersection({ intersection, size = 80 }) {
     // Queue visualizer (colored dots in lanes)
     DIRECTIONS.forEach(dir => {
       const count = Math.min(queues[dir], 6)
-      const isActive = activeDir === dir
+      const isActive = phaseDirections(activeDir).includes(dir)
       for (let i = 0; i < count; i++) {
         let px, py
         const offset = i * 6 + 4
