@@ -28,7 +28,8 @@
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-display);
@@ -37,7 +38,7 @@ html, body {
 }
 
 body {
-  background-image: 
+  background-image:
     radial-gradient(ellipse at 20% 50%, rgba(41, 121, 255, 0.04) 0%, transparent 50%),
     radial-gradient(ellipse at 80% 20%, rgba(0, 230, 118, 0.03) 0%, transparent 40%),
     linear-gradient(180deg, #0a0e1a 0%, #080c16 100%);
@@ -46,9 +47,11 @@ body {
 ::-webkit-scrollbar {
   width: 4px;
 }
+
 ::-webkit-scrollbar-track {
   background: var(--bg-primary);
 }
+
 ::-webkit-scrollbar-thumb {
   background: var(--border-bright);
   border-radius: 2px;

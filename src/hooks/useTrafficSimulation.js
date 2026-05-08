@@ -1,4 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  calculateSignal,
+  connectWebSocket,
+  getComparison,
+  getQueueHistory,
+  getSimulationState,
+  setSpeed as setSpeedApi,
+  startSim,
+  stopSim,
+} from '../services/api'
 
 const DIRECTIONS = ['north', 'south', 'east', 'west']
 
@@ -14,248 +24,349 @@ const INTERSECTION_POSITIONS = [
   { id: 'I', row: 2, col: 2, label: 'I' },
 ]
 
-const createInitialQueues = (peakHour, heavyNorth) => ({
-  north: peakHour ? (heavyNorth ? 18 : 12) : (heavyNorth ? 14 : 6),
-  south: peakHour ? 10 : 5,
-  east: peakHour ? 8 : 4,
-  west: peakHour ? 9 : 5,
-})
+const FIXED_GREEN_TIMES = { north: 30, south: 30, east: 30, west: 30 }
 
-const computeAIGreenTime = (queues, busBonus) => {
-  const scores = {}
-  DIRECTIONS.forEach(dir => {
-    scores[dir] = queues[dir] + (busBonus && dir === 'north' ? 10 : 0)
-  })
-  const total = Object.values(scores).reduce((a, b) => a + b, 0) || 1
-  const greenTimes = {}
-  DIRECTIONS.forEach(dir => {
-    const ratio = scores[dir] / total
-    greenTimes[dir] = Math.max(10, Math.min(60, Math.round(ratio * 120)))
-  })
-  return greenTimes
-}
+const createFallbackIntersections = () =>
+  INTERSECTION_POSITIONS.map((pos) => ({
+    ...pos,
+    queues: { north: 3, south: 3, east: 3, west: 3 },
+    activeDir: 'north',
+    timer: 30,
+  }))
+
+const readNextValue = (valueOrUpdater, current) =>
+  typeof valueOrUpdater === 'function' ? valueOrUpdater(current) : valueOrUpdater
 
 export function useTrafficSimulation() {
-  const [mode, setMode] = useState('fixed') // 'fixed' | 'ai'
-  const [peakHour, setPeakHour] = useState(false)
-  const [heavyNorth, setHeavyNorth] = useState(false)
-  const [isRunning, setIsRunning] = useState(false)
-  const [speed, setSpeed] = useState(1)
+  const [mode, setModeState] = useState('fixed')
+  const [peakHour, setPeakHourState] = useState(false)
+  const [heavyNorth, setHeavyNorthState] = useState(false)
+  const [isRunning, setIsRunningState] = useState(false)
+  const [speed, setSpeedState] = useState(1)
+
   const [activeDir, setActiveDir] = useState('north')
   const [phaseTimer, setPhaseTimer] = useState(30)
-  const [queues, setQueues] = useState(createInitialQueues(false, false))
+  const [queues, setQueues] = useState({ north: 6, south: 5, east: 4, west: 5 })
   const [totalPassed, setTotalPassed] = useState(0)
   const [waitTimes, setWaitTimes] = useState({ fixed: [], ai: [] })
   const [vehicles, setVehicles] = useState([])
-  const [intersections, setIntersections] = useState(
-    INTERSECTION_POSITIONS.map(pos => ({
-      ...pos,
-      queues: { north: 3, south: 3, east: 3, west: 3 },
-      activeDir: DIRECTIONS[Math.floor(Math.random() * 4)],
-      timer: Math.floor(Math.random() * 30),
-    }))
-  )
+  const [intersections, setIntersections] = useState(createFallbackIntersections)
   const [simTime, setSimTime] = useState(0)
   const [history, setHistory] = useState([])
+  const [greenTimes, setGreenTimes] = useState(FIXED_GREEN_TIMES)
+  const [avgFixedWait, setAvgFixedWait] = useState(0)
+  const [avgAIWait, setAvgAIWait] = useState(0)
 
-  const tickRef = useRef(null)
-  const frameRef = useRef(0)
-  const vehicleIdRef = useRef(0)
-  const dirIndexRef = useRef(0)
-  const phaseTimerRef = useRef(30)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState('')
 
-  const nextVehicleId = () => {
-    vehicleIdRef.current += 1
-    return vehicleIdRef.current
-  }
+  const modeRef = useRef(mode)
+  const peakHourRef = useRef(peakHour)
+  const heavyNorthRef = useRef(heavyNorth)
+  const isRunningRef = useRef(isRunning)
+  const speedRef = useRef(speed)
+  const queueRef = useRef(queues)
+  const suppressSocketErrorRef = useRef(false)
 
-  const spawnVehicle = useCallback((dir, currentMode) => {
-    const isVertical = dir === 'north' || dir === 'south'
-    const x = dir === 'east' ? -30 : dir === 'west' ? 830 : dir === 'north' ? 380 : 420
-    const y = dir === 'south' ? -30 : dir === 'north' ? 530 : isVertical ? 250 : 270
-    const types = ['car', 'car', 'car', 'bus', 'truck']
-    return {
-      id: nextVehicleId(),
-      dir,
-      type: types[Math.floor(Math.random() * types.length)],
-      x, y,
-      passed: false,
-      waiting: false,
-      color: dir === 'north' ? '#ff6d00' : dir === 'south' ? '#00e5ff' : dir === 'east' ? '#ffd600' : '#c653ff',
-    }
+  useEffect(() => { modeRef.current = mode }, [mode])
+  useEffect(() => { peakHourRef.current = peakHour }, [peakHour])
+  useEffect(() => { heavyNorthRef.current = heavyNorth }, [heavyNorth])
+  useEffect(() => { isRunningRef.current = isRunning }, [isRunning])
+  useEffect(() => { speedRef.current = speed }, [speed])
+  useEffect(() => { queueRef.current = queues }, [queues])
+
+  const applySnapshot = useCallback((snapshot) => {
+    setModeState(snapshot.mode)
+    setPeakHourState(snapshot.peakHour)
+    setHeavyNorthState(snapshot.heavyNorth)
+    setIsRunningState(snapshot.isRunning)
+    setSpeedState(snapshot.speed)
+
+    setActiveDir(snapshot.activeDir)
+    setPhaseTimer(snapshot.phaseTimer)
+    setQueues(snapshot.queues)
+    setTotalPassed(snapshot.totalPassed)
+    setWaitTimes(snapshot.waitTimes)
+    setVehicles(snapshot.vehicles)
+    setIntersections(snapshot.intersections)
+    setSimTime(snapshot.simTime)
+    setHistory(snapshot.history)
+    setGreenTimes(snapshot.greenTimes)
+    setAvgFixedWait(snapshot.avgFixedWait)
+    setAvgAIWait(snapshot.avgAIWait)
+
+    modeRef.current = snapshot.mode
+    peakHourRef.current = snapshot.peakHour
+    heavyNorthRef.current = snapshot.heavyNorth
+    isRunningRef.current = snapshot.isRunning
+    speedRef.current = snapshot.speed
+    queueRef.current = snapshot.queues
   }, [])
 
-  const reset = useCallback(() => {
-    clearInterval(tickRef.current)
-    setIsRunning(false)
-    setActiveDir('north')
-    setPhaseTimer(30)
-    phaseTimerRef.current = 30
-    dirIndexRef.current = 0
-    frameRef.current = 0
-    const q = createInitialQueues(peakHour, heavyNorth)
-    setQueues(q)
-    setTotalPassed(0)
-    setWaitTimes({ fixed: [], ai: [] })
-    setVehicles([])
-    setSimTime(0)
-    setHistory([])
-    setIntersections(INTERSECTION_POSITIONS.map(pos => ({
-      ...pos,
-      queues: { north: Math.floor(Math.random() * 8) + 1, south: Math.floor(Math.random() * 8) + 1, east: Math.floor(Math.random() * 8) + 1, west: Math.floor(Math.random() * 8) + 1 },
-      activeDir: DIRECTIONS[Math.floor(Math.random() * 4)],
-      timer: Math.floor(Math.random() * 30),
-    })))
-  }, [peakHour, heavyNorth])
+  const setApiError = useCallback((err, fallbackMessage = 'API server is unreachable') => {
+    const message = err instanceof Error ? err.message : fallbackMessage
+    setError(message || fallbackMessage)
+  }, [])
 
-  useEffect(() => {
-    reset()
-  }, [peakHour, heavyNorth, mode])
+  const syncSignalPlan = useCallback(async (sourceQueues = queueRef.current) => {
+    if (modeRef.current !== 'ai') {
+      setGreenTimes(FIXED_GREEN_TIMES)
+      return
+    }
 
-  const tick = useCallback(() => {
-    frameRef.current += 1
-    const frame = frameRef.current
+    try {
+      const response = await calculateSignal({
+        north: sourceQueues.north,
+        south: sourceQueues.south,
+        east: sourceQueues.east,
+        west: sourceQueues.west,
+        is_peak_hour: peakHourRef.current,
+        bus_directions: heavyNorthRef.current ? ['north'] : [],
+      })
+      setGreenTimes({
+        north: response.north,
+        south: response.south,
+        east: response.east,
+        west: response.west,
+      })
+      setError('')
+    } catch (err) {
+      setApiError(err, 'Signal calculation API is unreachable')
+    }
+  }, [setApiError])
 
-    // Main intersection logic
-    setPhaseTimer(prev => {
-      const next = prev - 1
-      if (next <= 0) {
-        // Advance direction
-        dirIndexRef.current = (dirIndexRef.current + 1) % DIRECTIONS.length
-        const newDir = DIRECTIONS[dirIndexRef.current]
-        setActiveDir(newDir)
+  const configureStoppedSimulation = useCallback(async (nextMode, nextPeakHour, nextHeavyNorth) => {
+    try {
+      const state = await startSim({
+        mode: nextMode,
+        peak_hour: nextPeakHour,
+        heavy_north: nextHeavyNorth,
+        bus_directions: nextHeavyNorth ? ['north'] : [],
+        reset: true,
+        autostart: false,
+      })
+      applySnapshot(state)
+      await syncSignalPlan(state.queues)
+      setError('')
+    } catch (err) {
+      setApiError(err)
+    }
+  }, [applySnapshot, setApiError, syncSignalPlan])
 
-        const newTime = mode === 'fixed' ? 30 : (() => {
-          setQueues(q => {
-            const times = computeAIGreenTime(q, peakHour)
-            phaseTimerRef.current = times[newDir]
-            return q
+  const setMode = useCallback((nextModeOrUpdater) => {
+    const nextMode = readNextValue(nextModeOrUpdater, modeRef.current)
+    setModeState(nextMode)
+    setIsRunningState(false)
+    modeRef.current = nextMode
+    isRunningRef.current = false
+    void configureStoppedSimulation(nextMode, peakHourRef.current, heavyNorthRef.current)
+  }, [configureStoppedSimulation])
+
+  const setPeakHour = useCallback((nextPeakOrUpdater) => {
+    const nextPeak = readNextValue(nextPeakOrUpdater, peakHourRef.current)
+    setPeakHourState(nextPeak)
+    setIsRunningState(false)
+    peakHourRef.current = nextPeak
+    isRunningRef.current = false
+    void configureStoppedSimulation(modeRef.current, nextPeak, heavyNorthRef.current)
+  }, [configureStoppedSimulation])
+
+  const setHeavyNorth = useCallback((nextHeavyOrUpdater) => {
+    const nextHeavy = readNextValue(nextHeavyOrUpdater, heavyNorthRef.current)
+    setHeavyNorthState(nextHeavy)
+    setIsRunningState(false)
+    heavyNorthRef.current = nextHeavy
+    isRunningRef.current = false
+    void configureStoppedSimulation(modeRef.current, peakHourRef.current, nextHeavy)
+  }, [configureStoppedSimulation])
+
+  const setIsRunning = useCallback((nextRunningOrUpdater) => {
+    const nextRunning = Boolean(readNextValue(nextRunningOrUpdater, isRunningRef.current))
+    setIsRunningState(nextRunning)
+    isRunningRef.current = nextRunning
+
+    if (nextRunning) {
+      void (async () => {
+        try {
+          const state = await startSim({
+            mode: modeRef.current,
+            peak_hour: peakHourRef.current,
+            heavy_north: heavyNorthRef.current,
+            bus_directions: heavyNorthRef.current ? ['north'] : [],
+            reset: false,
+            autostart: true,
           })
-          return phaseTimerRef.current || 30
-        })()
-        return mode === 'fixed' ? 30 : newTime
-      }
-      return next
-    })
-
-    // Queue dynamics
-    setQueues(prev => {
-      const updated = { ...prev }
-      DIRECTIONS.forEach(dir => {
-        // Spawn arrivals
-        const arrivalRate = peakHour ? 0.4 : 0.2
-        if (Math.random() < arrivalRate) {
-          updated[dir] = Math.min(40, updated[dir] + 1)
+          applySnapshot(state)
+          setError('')
+        } catch (err) {
+          setIsRunningState(false)
+          isRunningRef.current = false
+          setApiError(err)
         }
-      })
-      // Discharge active direction
-      const curDir = DIRECTIONS[dirIndexRef.current]
-      if (updated[curDir] > 0) {
-        const discharge = mode === 'ai' ? 2 : 1
-        updated[curDir] = Math.max(0, updated[curDir] - discharge)
-        setTotalPassed(p => p + discharge)
-        setWaitTimes(wt => {
-          const waitVal = 30 - phaseTimerRef.current
-          const key = mode
-          return { ...wt, [key]: [...wt[key].slice(-19), waitVal] }
-        })
-      }
-      return updated
-    })
-
-    // Multi-intersection update
-    setIntersections(prev => prev.map(inter => {
-      let newTimer = inter.timer - 1
-      let newActiveDir = inter.activeDir
-      let newQueues = { ...inter.queues }
-
-      // Arrivals
-      DIRECTIONS.forEach(dir => {
-        if (Math.random() < 0.3) newQueues[dir] = Math.min(20, newQueues[dir] + 1)
-      })
-      // Discharge
-      if (newQueues[newActiveDir] > 0) newQueues[newActiveDir] = Math.max(0, newQueues[newActiveDir] - 1)
-
-      if (newTimer <= 0) {
-        const idx = DIRECTIONS.indexOf(newActiveDir)
-        newActiveDir = DIRECTIONS[(idx + 1) % 4]
-        newTimer = mode === 'fixed' ? 30 : Math.max(10, Math.min(60, newQueues[newActiveDir] * 2 + 10))
-      }
-
-      return { ...inter, timer: newTimer, activeDir: newActiveDir, queues: newQueues }
-    }))
-
-    // Vehicle animation
-    if (frame % 2 === 0) {
-      const spawnChance = peakHour ? 0.6 : 0.3
-      if (Math.random() < spawnChance) {
-        const dir = DIRECTIONS[Math.floor(Math.random() * 4)]
-        setVehicles(prev => {
-          if (prev.length > 20) return prev
-          return [...prev, spawnVehicle(dir, mode)]
-        })
-      }
+      })()
+      return
     }
 
-    setVehicles(prev => {
-      return prev.map(v => {
-        const speed_px = 2.5
-        let { x, y } = v
-        const atIntersection = x > 340 && x < 460 && y > 200 && y < 340
-        const isGreen = DIRECTIONS[dirIndexRef.current] === v.dir
+    void (async () => {
+      try {
+        const state = await stopSim()
+        applySnapshot(state)
+        setError('')
+      } catch (err) {
+        setApiError(err)
+      }
+    })()
+  }, [applySnapshot, setApiError])
 
-        if (atIntersection && !isGreen) {
-          return { ...v, waiting: true }
-        }
+  const setSpeed = useCallback((nextSpeedOrUpdater) => {
+    const nextSpeed = Number(readNextValue(nextSpeedOrUpdater, speedRef.current))
+    setSpeedState(nextSpeed)
+    speedRef.current = nextSpeed
 
-        switch (v.dir) {
-          case 'north': y += speed_px; break
-          case 'south': y -= speed_px; break
-          case 'east': x += speed_px; break
-          case 'west': x -= speed_px; break
-        }
-        return { ...v, x, y, waiting: false }
-      }).filter(v => v.x > -50 && v.x < 860 && v.y > -50 && v.y < 560)
-    })
+    void (async () => {
+      try {
+        const state = await setSpeedApi(nextSpeed)
+        applySnapshot(state)
+        setError('')
+      } catch (err) {
+        setApiError(err)
+      }
+    })()
+  }, [applySnapshot, setApiError])
 
-    setSimTime(t => t + 1)
-    setHistory(h => {
-      const totalQ = Object.values(queues).reduce((a, b) => a + b, 0)
-      return [...h.slice(-59), { t: simTime, queue: totalQ }]
-    })
-  }, [mode, peakHour, heavyNorth, spawnVehicle, simTime, queues])
+  const reset = useCallback(() => {
+    setIsRunningState(false)
+    isRunningRef.current = false
+    void configureStoppedSimulation(modeRef.current, peakHourRef.current, heavyNorthRef.current)
+  }, [configureStoppedSimulation])
 
   useEffect(() => {
-    if (isRunning) {
-      tickRef.current = setInterval(tick, 1000 / speed)
-    } else {
-      clearInterval(tickRef.current)
+    let cancelled = false
+
+    const bootstrap = async () => {
+      setIsLoading(true)
+      try {
+        const [state, comparison, queueHistory] = await Promise.all([
+          getSimulationState(),
+          getComparison(),
+          getQueueHistory(),
+        ])
+
+        if (cancelled) return
+
+        const mergedState = {
+          ...state,
+          avgFixedWait: comparison.avgFixedWait,
+          avgAIWait: comparison.avgAIWait,
+          history: queueHistory.history?.length ? queueHistory.history : state.history,
+        }
+
+        applySnapshot(mergedState)
+        await syncSignalPlan(mergedState.queues)
+        setError('')
+      } catch (err) {
+        if (!cancelled) {
+          setApiError(err)
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false)
+        }
+      }
     }
-    return () => clearInterval(tickRef.current)
-  }, [isRunning, tick, speed])
 
-  const avgWait = (arr) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0
+    void bootstrap()
+    return () => {
+      cancelled = true
+    }
+  }, [applySnapshot, setApiError, syncSignalPlan])
 
-  const greenTimes = mode === 'ai' ? computeAIGreenTime(queues, peakHour) : { north: 30, south: 30, east: 30, west: 30 }
+  useEffect(() => {
+    let disconnected = false
+    let reconnectTimeout = null
+    let teardown = () => {}
 
-  return {
-    mode, setMode,
-    peakHour, setPeakHour,
-    heavyNorth, setHeavyNorth,
-    isRunning, setIsRunning,
-    speed, setSpeed,
-    activeDir, phaseTimer,
-    queues, totalPassed,
+    const connect = () => {
+      teardown = connectWebSocket(
+        (snapshot) => {
+          if (disconnected) return
+          suppressSocketErrorRef.current = false
+          applySnapshot(snapshot)
+          setError('')
+        },
+        (socketError) => {
+          if (disconnected || suppressSocketErrorRef.current) return
+          setApiError(socketError, 'WebSocket connection lost')
+          reconnectTimeout = setTimeout(connect, 1500)
+        }
+      )
+    }
+
+    connect()
+
+    return () => {
+      disconnected = true
+      suppressSocketErrorRef.current = true
+      if (reconnectTimeout) clearTimeout(reconnectTimeout)
+      teardown()
+    }
+  }, [applySnapshot, setApiError])
+
+  const result = useMemo(() => ({
+    mode,
+    setMode,
+    peakHour,
+    setPeakHour,
+    heavyNorth,
+    setHeavyNorth,
+    isRunning,
+    setIsRunning,
+    speed,
+    setSpeed,
+    activeDir,
+    phaseTimer,
+    queues,
+    totalPassed,
     waitTimes,
     vehicles,
     intersections,
     simTime,
     history,
     reset,
-    avgFixedWait: avgWait(waitTimes.fixed),
-    avgAIWait: avgWait(waitTimes.ai),
+    avgFixedWait,
+    avgAIWait,
     greenTimes,
-  }
+    isLoading,
+    error,
+  }), [
+    mode,
+    setMode,
+    peakHour,
+    setPeakHour,
+    heavyNorth,
+    setHeavyNorth,
+    isRunning,
+    setIsRunning,
+    speed,
+    setSpeed,
+    activeDir,
+    phaseTimer,
+    queues,
+    totalPassed,
+    waitTimes,
+    vehicles,
+    intersections,
+    simTime,
+    history,
+    reset,
+    avgFixedWait,
+    avgAIWait,
+    greenTimes,
+    isLoading,
+    error,
+  ])
+
+  return result
 }
 
 export { DIRECTIONS, INTERSECTION_POSITIONS }

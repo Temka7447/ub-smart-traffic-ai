@@ -75,6 +75,65 @@ const TABS = [
   { id: 'chart', label: '◈ Харьцуулалт' },
 ]
 
+function LoadingSpinner() {
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 16,
+      right: 16,
+      zIndex: 1200,
+      background: '#131929',
+      border: '1px solid #1e2d4a',
+      borderRadius: '10px',
+      padding: '8px 12px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px',
+      color: '#7a9cc8',
+      fontFamily: 'JetBrains Mono',
+      fontSize: '11px',
+    }}>
+      <span style={{
+        width: 12,
+        height: 12,
+        borderRadius: '50%',
+        border: '2px solid #1e2d4a',
+        borderTopColor: '#00e676',
+        animation: 'spin 0.8s linear infinite',
+      }} />
+      Loading backend...
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  )
+}
+
+function ErrorToast({ message }) {
+  return (
+    <div style={{
+      position: 'fixed',
+      right: 16,
+      bottom: 16,
+      zIndex: 1200,
+      background: '#2b1116',
+      border: '1px solid #6d1b2a',
+      borderRadius: '10px',
+      padding: '10px 12px',
+      color: '#ff8a9c',
+      fontSize: '12px',
+      fontFamily: 'Sora, sans-serif',
+      maxWidth: '360px',
+      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+    }}>
+      API Error: {message}
+    </div>
+  )
+}
+
 export default function App() {
   const sim = useTrafficSimulation()
   const [activeTab, setActiveTab] = useState('main')
@@ -82,6 +141,8 @@ export default function App() {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <Header simTime={sim.simTime} isRunning={sim.isRunning} />
+      {sim.isLoading && <LoadingSpinner />}
+      {!sim.isLoading && sim.error && <ErrorToast message={sim.error} />}
 
       {/* Tab nav */}
       <nav style={{

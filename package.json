@@ -1,9 +1,13 @@
 {
   "name": "ai-traffic-simulator",
   "version": "1.0.0",
+  "private": true,
   "description": "AI Traffic Flow & Signal Control Simulator",
+  "type": "module",
   "scripts": {
-    "dev": "vite",
+    "frontend": "vite",
+    "backend": "uvicorn backend.main:app --reload --port 8000",
+    "dev": "concurrently \"npm run frontend\" \"npm run backend\"",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -14,6 +18,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",
+    "concurrently": "^9.2.1",
     "vite": "^4.4.0"
   }
 }
