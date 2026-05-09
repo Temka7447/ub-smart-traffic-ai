@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 from contextlib import suppress
 from typing import Any
@@ -32,12 +33,35 @@ OFF_SCREEN_EAST = -SPAWN_OFFSET
 OFF_SCREEN_WEST = CANVAS_WIDTH + SPAWN_OFFSET
 EXIT_MARGIN = 80.0
 
-BASE_VEHICLE_SPEED = 2.9
+BASE_VEHICLE_SPEED = 3.15
 BASE_SPAWN_CHANCE = 0.45
 PEAK_SPAWN_CHANCE = 0.78
 MAX_ACTIVE_VEHICLES = 56
 CENTER_X = CANVAS_WIDTH / 2
 CENTER_Y = CANVAS_HEIGHT / 2
+PHYSICS_HZ = 12.0
+PHYSICS_STEP_SECONDS = 1.0 / PHYSICS_HZ
+
+DIRECTION_ANGLE = {
+    "north": math.pi,
+    "east": math.pi / 2,
+    "south": 0.0,
+    "west": -math.pi / 2,
+}
+
+DIRECTION_VECTOR = {
+    "north": (0.0, 1.0),
+    "south": (0.0, -1.0),
+    "east": (1.0, 0.0),
+    "west": (-1.0, 0.0),
+}
+
+VEHICLE_DYNAMICS = {
+    "car": {"cruise": 42.0, "accel": 58.0, "brake": 92.0},
+    "truck": {"cruise": 32.0, "accel": 38.0, "brake": 70.0},
+    "bus": {"cruise": 30.0, "accel": 34.0, "brake": 64.0},
+    "emergency": {"cruise": 48.0, "accel": 70.0, "brake": 100.0},
+}
 
 INTERSECTION_POSITIONS = [
     {"id": "A", "row": 0, "col": 0, "label": "A"},
@@ -93,6 +117,7 @@ class TrafficSimulator:
 
         self._frame = 0
         self._vehicle_id = 0
+        self._second_accumulator = 0.0
 
     def _create_initial_lane_queues(self, direction_queues: dict[str, int]) -> dict[str, int]:
         lane_queues: dict[str, int] = {}
@@ -137,8 +162,9 @@ class TrafficSimulator:
                 await asyncio.sleep(0.1)
                 continue
 
-            await asyncio.sleep(max(0.01, 1.0 / max(speed, 0.1)))
-            state = await self._tick()
+            step_seconds = PHYSICS_STEP_SECONDS
+            await asyncio.sleep(max(0.01, step_seconds / max(speed, 0.1)))
+            state = await self._tick(step_seconds)
             await self._broadcast_state(state)
 
     def _create_initial_queues(self, peak_hour: bool, heavy_north: bool) -> dict[str, int]:
@@ -237,6 +263,18 @@ class TrafficSimulator:
             "turn": turn,
             "x": float(x),
             "y": float(y),
+            "speed": 0.0,
+            "targetSpeed": VEHICLE_DYNAMICS[vehicle_type]["cruise"],
+            "angle": DIRECTION_ANGLE[direction],
+            "steer": 0.0,
+            "suspension": self._rng.uniform(-0.15, 0.15),
+            "turnProgress": 0.0,
+            "turnStartX": None,
+            "turnStartY": None,
+            "turnEndX": None,
+            "turnEndY": None,
+            "turnFromDir": None,
+            "turnToDir": None,
             "waiting": False,
             "color": VEHICLE_COLORS[direction],
         }
@@ -282,15 +320,108 @@ class TrafficSimulator:
             return x >= CENTER_X - 6
         return x <= CENTER_X + 6
 
-    def _move_vehicle(self, vehicle: dict[str, Any], all_vehicles: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _stop_distance(self, direction: str, x: float, y: float) -> float:
+        if direction == "north":
+            return 128.0 - y
+        if direction == "south":
+            return y - 272.0
+        if direction == "east":
+            return 178.0 - x
+        return x - 322.0
+
+    def _gap_to_leader(self, vehicle: dict[str, Any], same_lane: list[dict[str, Any]]) -> float:
+        direction = vehicle["dir"]
+        x = float(vehicle["x"])
+        y = float(vehicle["y"])
+        min_gap = float("inf")
+
+        for other in same_lane:
+            if other.get("turnProgress", 0.0) > 0:
+                continue
+
+            other_x = float(other["x"])
+            other_y = float(other["y"])
+            if direction == "north":
+                gap = other_y - y
+            elif direction == "south":
+                gap = y - other_y
+            elif direction == "east":
+                gap = other_x - x
+            else:
+                gap = x - other_x
+
+            if 0 < gap < 180.0:
+                min_gap = min(min_gap, gap)
+
+        return min_gap
+
+    def _angle_lerp(self, current: float, target: float, ratio: float) -> float:
+        delta = (target - current + math.pi) % (math.pi * 2) - math.pi
+        return current + delta * max(0.0, min(1.0, ratio))
+
+    def _turn_endpoint(self, next_dir: str, lane: int) -> tuple[float, float]:
+        if next_dir in {"north", "south"}:
+            return LANE_X[next_dir][lane], CENTER_Y + (42.0 if next_dir == "north" else -42.0)
+        return CENTER_X + (42.0 if next_dir == "east" else -42.0), LANE_Y[next_dir][lane]
+
+    def _advance_turn(self, vehicle: dict[str, Any], travel_px: float) -> dict[str, Any]:
+        start_x = float(vehicle.get("turnStartX") if vehicle.get("turnStartX") is not None else vehicle["x"])
+        start_y = float(vehicle.get("turnStartY") if vehicle.get("turnStartY") is not None else vehicle["y"])
+        end_x = float(vehicle.get("turnEndX") if vehicle.get("turnEndX") is not None else vehicle["x"])
+        end_y = float(vehicle.get("turnEndY") if vehicle.get("turnEndY") is not None else vehicle["y"])
+        from_dir = vehicle.get("turnFromDir") or vehicle["dir"]
+        to_dir = vehicle.get("turnToDir") or vehicle["dir"]
+        progress = min(1.0, float(vehicle.get("turnProgress", 0.0)) + max(0.018, travel_px / 42.0))
+
+        eased = progress * progress * (3.0 - 2.0 * progress)
+        control_x = CENTER_X
+        control_y = CENTER_Y
+        x = ((1 - eased) ** 2 * start_x) + (2 * (1 - eased) * eased * control_x) + (eased ** 2 * end_x)
+        y = ((1 - eased) ** 2 * start_y) + (2 * (1 - eased) * eased * control_y) + (eased ** 2 * end_y)
+        angle = self._angle_lerp(DIRECTION_ANGLE[from_dir], DIRECTION_ANGLE[to_dir], eased)
+        turn_sign = 1.0 if (DIRECTION_ANGLE[to_dir] - DIRECTION_ANGLE[from_dir]) > 0 else -1.0
+
+        updated = {
+            **vehicle,
+            "x": x,
+            "y": y,
+            "angle": angle,
+            "steer": math.sin(progress * math.pi) * 0.18 * turn_sign,
+            "suspension": math.sin((self._frame + vehicle["id"]) * 0.22) * min(1.0, float(vehicle.get("speed", 0.0)) / 44.0),
+            "turnProgress": progress,
+            "waiting": False,
+        }
+
+        if progress >= 1.0:
+            updated.update(
+                {
+                    "dir": to_dir,
+                    "turn": "straight",
+                    "angle": DIRECTION_ANGLE[to_dir],
+                    "steer": 0.0,
+                    "turnProgress": 0.0,
+                    "turnStartX": None,
+                    "turnStartY": None,
+                    "turnEndX": None,
+                    "turnEndY": None,
+                    "turnFromDir": None,
+                    "turnToDir": None,
+                }
+            )
+
+        return updated
+
+    def _move_vehicle(
+        self,
+        vehicle: dict[str, Any],
+        all_vehicles: list[dict[str, Any]],
+        dt: float = 1.0,
+    ) -> dict[str, Any] | None:
         direction = vehicle["dir"]
         x = float(vehicle["x"])
         y = float(vehicle["y"])
 
         can_go = self.signal_state == "green" and direction in self._phase_directions()
-        if should_yield(direction, self.active_dir, x, y) and not can_go:
-            return {**vehicle, "waiting": True}
-
         same_lane = [
             other
             for other in all_vehicles
@@ -298,154 +429,228 @@ class TrafficSimulator:
             and other["dir"] == direction
             and other.get("lane") == vehicle.get("lane")
         ]
-        speed_px = get_safe_speed(vehicle, same_lane, BASE_VEHICLE_SPEED)
+        dynamics = VEHICLE_DYNAMICS.get(vehicle.get("type", "car"), VEHICLE_DYNAMICS["car"])
+        current_speed = float(vehicle.get("speed", 0.0))
+        target_speed = min(dynamics["cruise"], get_safe_speed(vehicle, same_lane, BASE_VEHICLE_SPEED) * PHYSICS_HZ)
+        leader_gap = self._gap_to_leader(vehicle, same_lane)
 
-        if speed_px == 0.0:
-            return {**vehicle, "waiting": True}
+        if leader_gap != float("inf"):
+            desired_gap = 34.0 + current_speed * 0.7
+            if leader_gap < desired_gap:
+                gap_ratio = max(0.0, min(1.0, (leader_gap - 16.0) / max(1.0, desired_gap - 16.0)))
+                target_speed *= gap_ratio * gap_ratio
 
-        if direction == "north":
-            y += speed_px
-        elif direction == "south":
-            y -= speed_px
-        elif direction == "east":
-            x += speed_px
-        else:
-            x -= speed_px
+        stop_dist = self._stop_distance(direction, x, y)
+        must_yield = should_yield(direction, self.active_dir, x, y) and not can_go
+        if must_yield and stop_dist > -8.0:
+            brake_ratio = max(0.0, min(1.0, (stop_dist - 4.0) / 58.0))
+            target_speed = min(target_speed, dynamics["cruise"] * brake_ratio * brake_ratio)
 
         turn = vehicle.get("turn", "straight")
+        if turn != "straight" and vehicle.get("turnProgress", 0.0) <= 0:
+            turn_approach = max(0.0, min(1.0, abs(self._stop_distance(direction, x, y)) / 95.0))
+            if turn_approach < 1.0:
+                target_speed = min(target_speed, dynamics["cruise"] * (0.48 + turn_approach * 0.42))
+
+        speed_delta = target_speed - current_speed
+        if speed_delta >= 0:
+            speed_px = current_speed + min(speed_delta, dynamics["accel"] * dt)
+        else:
+            speed_px = current_speed + max(speed_delta, -dynamics["brake"] * dt)
+        speed_px = max(0.0, speed_px)
+        travel_px = speed_px * dt
+
+        if vehicle.get("turnProgress", 0.0) > 0:
+            moved_turn = self._advance_turn({**vehicle, "speed": speed_px, "targetSpeed": target_speed}, travel_px)
+            x = float(moved_turn["x"])
+            y = float(moved_turn["y"])
+            if x < (OFF_SCREEN_EAST - EXIT_MARGIN) or x > (OFF_SCREEN_WEST + EXIT_MARGIN):
+                return None
+            if y < (OFF_SCREEN_NORTH - EXIT_MARGIN) or y > (OFF_SCREEN_SOUTH + EXIT_MARGIN):
+                return None
+            return moved_turn
+
+        if speed_px < 0.04:
+            return {
+                **vehicle,
+                "speed": 0.0,
+                "targetSpeed": target_speed,
+                "angle": self._angle_lerp(float(vehicle.get("angle", DIRECTION_ANGLE[direction])), DIRECTION_ANGLE[direction], 0.35),
+                "steer": 0.0,
+                "suspension": 0.0,
+                "waiting": must_yield or leader_gap < 22.0,
+            }
+
+        dx, dy = DIRECTION_VECTOR[direction]
+        x += dx * travel_px
+        y += dy * travel_px
+
         if turn != "straight" and self._can_turn_now({**vehicle, "x": x, "y": y}):
             next_dir = self._turned_direction(direction, turn)
-            if next_dir in {"north", "south"}:
-                x = LANE_X[next_dir][vehicle.get("lane", 0)]
-            else:
-                y = LANE_Y[next_dir][vehicle.get("lane", 0)]
-            direction = next_dir
-            turn = "straight"
+            end_x, end_y = self._turn_endpoint(next_dir, vehicle.get("lane", 0))
+            return self._advance_turn(
+                {
+                    **vehicle,
+                    "x": x,
+                    "y": y,
+                    "speed": speed_px,
+                    "targetSpeed": target_speed,
+                    "turnProgress": 0.01,
+                    "turnStartX": x,
+                    "turnStartY": y,
+                    "turnEndX": end_x,
+                    "turnEndY": end_y,
+                    "turnFromDir": direction,
+                    "turnToDir": next_dir,
+                },
+                travel_px,
+            )
 
         if x < (OFF_SCREEN_EAST - EXIT_MARGIN) or x > (OFF_SCREEN_WEST + EXIT_MARGIN):
             return None
         if y < (OFF_SCREEN_NORTH - EXIT_MARGIN) or y > (OFF_SCREEN_SOUTH + EXIT_MARGIN):
             return None
 
-        return {**vehicle, "x": x, "y": y, "dir": direction, "turn": turn, "waiting": False}
+        return {
+            **vehicle,
+            "x": x,
+            "y": y,
+            "dir": direction,
+            "turn": turn,
+            "speed": speed_px,
+            "targetSpeed": target_speed,
+            "angle": self._angle_lerp(float(vehicle.get("angle", DIRECTION_ANGLE[direction])), DIRECTION_ANGLE[direction], 0.3),
+            "steer": 0.0,
+            "suspension": math.sin((self._frame + vehicle["id"]) * 0.22) * min(1.0, speed_px / 44.0),
+            "waiting": False,
+        }
 
-    async def _tick(self) -> SimulationState:
+    async def _tick(self, dt: float = 1.0) -> SimulationState:
         async with self._lock:
             if not self.is_running:
                 return self._snapshot_locked()
 
             self._frame += 1
+            self._second_accumulator += dt
+            elapsed_seconds = int(self._second_accumulator)
+            if elapsed_seconds:
+                self._second_accumulator -= elapsed_seconds
 
-            self.phase_timer -= 1
-            if self.phase_timer <= 0:
-                if self.signal_state == "green":
-                    self.signal_state = "yellow"
-                    self.phase_timer = 3
-                elif self.signal_state == "yellow":
-                    self.signal_state = "all_red"
-                    self.phase_timer = 2
-                else:
-                    if self.emergency_directions:
-                        self.active_dir = "north" if self.emergency_directions[0] in {"north", "south"} else "east"
+            for _ in range(elapsed_seconds):
+                self.phase_timer -= 1
+                if self.phase_timer <= 0:
+                    if self.signal_state == "green":
+                        self.signal_state = "yellow"
+                        self.phase_timer = 3
+                    elif self.signal_state == "yellow":
+                        self.signal_state = "all_red"
+                        self.phase_timer = 2
                     else:
-                        self.active_dir = "east" if self.active_dir in {"north", "south"} else "north"
-                    self.signal_state = "green"
-                    self._refresh_green_times()
-                    pair = self._phase_directions()
-                    ai_phase = max(self.green_times[pair[0]], self.green_times[pair[1]])
-                    self.phase_timer = 30 if self.mode == "fixed" else max(12, min(90, ai_phase))
+                        if self.emergency_directions:
+                            self.active_dir = "north" if self.emergency_directions[0] in {"north", "south"} else "east"
+                        else:
+                            self.active_dir = "east" if self.active_dir in {"north", "south"} else "north"
+                        self.signal_state = "green"
+                        self._refresh_green_times()
+                        pair = self._phase_directions()
+                        ai_phase = max(self.green_times[pair[0]], self.green_times[pair[1]])
+                        self.phase_timer = 30 if self.mode == "fixed" else max(12, min(90, ai_phase))
 
-            updated_queues = dict(self.queues)
-            base_arrival_rate = 0.55 if self.peak_hour else 0.30
-            north_arrival_rate = min(0.98, base_arrival_rate + 0.20) if self.heavy_north else base_arrival_rate
-
-            for direction in DIRECTIONS:
-                arrival_rate = north_arrival_rate if direction == "north" else base_arrival_rate
-                if self._rng.random() < arrival_rate:
-                    updated_queues[direction] = min(60, updated_queues[direction] + self._rng.randint(1, 2))
-                    lane_key = f"{direction}_{self._rng.randint(0, 1)}"
-                    self.lane_queues[lane_key] = min(40, self.lane_queues.get(lane_key, 0) + 1)
-
-            if self.signal_state == "green":
-                for current_dir in self._phase_directions():
-                    if updated_queues[current_dir] <= 0:
-                        continue
-                    discharge = 3 if self.mode == "ai" else 2
-                    if current_dir in self.bus_directions:
-                        discharge += 1
-                    if current_dir in self.emergency_directions:
-                        discharge += 2
-                    moved = min(discharge, updated_queues[current_dir])
-                    updated_queues[current_dir] = max(0, updated_queues[current_dir] - moved)
-                    self.total_passed += moved
-                    for lane_idx in (0, 1):
-                        lane_key = f"{current_dir}_{lane_idx}"
-                        lane_moved = min(moved // 2 + (1 if lane_idx == 0 and moved % 2 else 0), self.lane_queues.get(lane_key, 0))
-                        self.lane_queues[lane_key] = max(0, self.lane_queues.get(lane_key, 0) - lane_moved)
-
-                active_cycle = max(self.green_times[d] for d in self._phase_directions()) if self.mode == "ai" else 30
-                wait_val = max(1, active_cycle - self.phase_timer)
-                mode_waits = self.wait_times[self.mode]
-                self.wait_times[self.mode] = [*mode_waits[-39:], wait_val]
-
-            self.queues = updated_queues
-
-            next_intersections: list[dict[str, Any]] = []
-            for intersection in self.intersections:
-                next_timer = intersection["timer"] - 1
-                next_active = intersection["activeDir"]
-                next_signal = intersection.get("signalState", "green")
-                next_queues = dict(intersection["queues"])
-                next_lanes = dict(intersection.get("laneQueues", self._create_initial_lane_queues(next_queues)))
+                updated_queues = dict(self.queues)
+                base_arrival_rate = 0.55 if self.peak_hour else 0.30
+                north_arrival_rate = min(0.98, base_arrival_rate + 0.20) if self.heavy_north else base_arrival_rate
 
                 for direction in DIRECTIONS:
-                    if self._rng.random() < 0.35:
-                        next_queues[direction] = min(24, next_queues[direction] + 1)
+                    arrival_rate = north_arrival_rate if direction == "north" else base_arrival_rate
+                    if self._rng.random() < arrival_rate:
+                        updated_queues[direction] = min(60, updated_queues[direction] + self._rng.randint(1, 2))
                         lane_key = f"{direction}_{self._rng.randint(0, 1)}"
-                        next_lanes[lane_key] = min(20, next_lanes.get(lane_key, 0) + 1)
+                        self.lane_queues[lane_key] = min(40, self.lane_queues.get(lane_key, 0) + 1)
 
-                if next_signal == "green":
-                    phase_pair = self._phase_directions(next_active)
-                    for direction in phase_pair:
-                        if next_queues[direction] > 0:
-                            next_queues[direction] = max(0, next_queues[direction] - 1)
+                if self.signal_state == "green":
+                    for current_dir in self._phase_directions():
+                        if updated_queues[current_dir] <= 0:
+                            continue
+                        discharge = 3 if self.mode == "ai" else 2
+                        if current_dir in self.bus_directions:
+                            discharge += 1
+                        if current_dir in self.emergency_directions:
+                            discharge += 2
+                        moved = min(discharge, updated_queues[current_dir])
+                        updated_queues[current_dir] = max(0, updated_queues[current_dir] - moved)
+                        self.total_passed += moved
+                        for lane_idx in (0, 1):
+                            lane_key = f"{current_dir}_{lane_idx}"
+                            lane_moved = min(moved // 2 + (1 if lane_idx == 0 and moved % 2 else 0), self.lane_queues.get(lane_key, 0))
+                            self.lane_queues[lane_key] = max(0, self.lane_queues.get(lane_key, 0) - lane_moved)
 
-                if next_timer <= 0:
+                    active_cycle = max(self.green_times[d] for d in self._phase_directions()) if self.mode == "ai" else 30
+                    wait_val = max(1, active_cycle - self.phase_timer)
+                    mode_waits = self.wait_times[self.mode]
+                    self.wait_times[self.mode] = [*mode_waits[-39:], wait_val]
+
+                self.queues = updated_queues
+
+                next_intersections: list[dict[str, Any]] = []
+                for intersection in self.intersections:
+                    next_timer = intersection["timer"] - 1
+                    next_active = intersection["activeDir"]
+                    next_signal = intersection.get("signalState", "green")
+                    next_queues = dict(intersection["queues"])
+                    next_lanes = dict(intersection.get("laneQueues", self._create_initial_lane_queues(next_queues)))
+
+                    for direction in DIRECTIONS:
+                        if self._rng.random() < 0.35:
+                            next_queues[direction] = min(24, next_queues[direction] + 1)
+                            lane_key = f"{direction}_{self._rng.randint(0, 1)}"
+                            next_lanes[lane_key] = min(20, next_lanes.get(lane_key, 0) + 1)
+
                     if next_signal == "green":
-                        next_signal = "yellow"
-                        next_timer = 3
-                    elif next_signal == "yellow":
-                        next_signal = "all_red"
-                        next_timer = 2
-                    else:
-                        next_active = "east" if next_active in {"north", "south"} else "north"
-                        next_signal = "green"
-                        g_times = calculate_green_time(next_queues)
-                        pair = self._phase_directions(next_active)
-                        next_timer = 30 if self.mode == "fixed" else max(12, min(90, max(g_times[pair[0]], g_times[pair[1]]) + 4))
+                        phase_pair = self._phase_directions(next_active)
+                        for direction in phase_pair:
+                            if next_queues[direction] > 0:
+                                next_queues[direction] = max(0, next_queues[direction] - 1)
 
-                next_intersections.append(
-                    {
-                        **intersection,
-                        "timer": next_timer,
-                        "activeDir": next_active,
-                        "queues": next_queues,
-                        "laneQueues": next_lanes,
-                        "signalState": next_signal,
-                        "greenTimes": calculate_green_time(next_queues),
-                    }
-                )
+                    if next_timer <= 0:
+                        if next_signal == "green":
+                            next_signal = "yellow"
+                            next_timer = 3
+                        elif next_signal == "yellow":
+                            next_signal = "all_red"
+                            next_timer = 2
+                        else:
+                            next_active = "east" if next_active in {"north", "south"} else "north"
+                            next_signal = "green"
+                            g_times = calculate_green_time(next_queues)
+                            pair = self._phase_directions(next_active)
+                            next_timer = 30 if self.mode == "fixed" else max(12, min(90, max(g_times[pair[0]], g_times[pair[1]]) + 4))
 
-            self.intersections = next_intersections
+                    next_intersections.append(
+                        {
+                            **intersection,
+                            "timer": next_timer,
+                            "activeDir": next_active,
+                            "queues": next_queues,
+                            "laneQueues": next_lanes,
+                            "signalState": next_signal,
+                            "greenTimes": calculate_green_time(next_queues),
+                        }
+                    )
+
+                self.intersections = next_intersections
+
+                self.sim_time += 1
+                total_queue = sum(self.queues.values())
+                self.history = [*self.history[-119:], {"t": self.sim_time, "queue": total_queue}]
 
             spawn_chance = PEAK_SPAWN_CHANCE if self.peak_hour else BASE_SPAWN_CHANCE
-            if self._rng.random() < spawn_chance and len(self.vehicles) < MAX_ACTIVE_VEHICLES:
+            if self._rng.random() < spawn_chance * dt and len(self.vehicles) < MAX_ACTIVE_VEHICLES:
                 primary_direction = "north" if self.heavy_north and self._rng.random() < 0.55 else self._rng.choice(DIRECTIONS)
                 first_vehicle = self._spawn_vehicle(primary_direction)
                 if not self._is_too_close_to_existing(first_vehicle):
                     self.vehicles.append(first_vehicle)
 
-                if self.peak_hour and self._rng.random() < 0.4 and len(self.vehicles) < MAX_ACTIVE_VEHICLES:
+                if self.peak_hour and self._rng.random() < 0.4 * dt and len(self.vehicles) < MAX_ACTIVE_VEHICLES:
                     secondary_direction = self._rng.choice(DIRECTIONS)
                     second_vehicle = self._spawn_vehicle(secondary_direction)
                     if not self._is_too_close_to_existing(second_vehicle):
@@ -453,14 +658,10 @@ class TrafficSimulator:
 
             moved_vehicles: list[dict[str, Any]] = []
             for vehicle in self.vehicles:
-                moved = self._move_vehicle(vehicle, self.vehicles)
+                moved = self._move_vehicle(vehicle, self.vehicles, dt)
                 if moved is not None:
                     moved_vehicles.append(moved)
             self.vehicles = moved_vehicles
-
-            self.sim_time += 1
-            total_queue = sum(self.queues.values())
-            self.history = [*self.history[-119:], {"t": self.sim_time, "queue": total_queue}]
 
             self._refresh_green_times()
             return self._snapshot_locked()
@@ -473,7 +674,7 @@ class TrafficSimulator:
             isRunning=self.is_running,
             speed=round(self.speed, 2),
             activeDir=self.active_dir,
-            phaseTimer=self.phase_timer,
+            phaseTimer=int(math.ceil(self.phase_timer)),
             signalState=self.signal_state,
             queues=dict(self.queues),
             laneQueues=dict(self.lane_queues),
@@ -585,6 +786,7 @@ class TrafficSimulator:
         self.history = []
         self._frame = 0
         self._vehicle_id = 0
+        self._second_accumulator = 0.0
         self._refresh_green_times()
 
     async def connect(self, websocket: WebSocket) -> None:

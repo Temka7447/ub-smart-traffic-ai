@@ -128,14 +128,41 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
+function lerp(current, target, amount) {
+  return current + (target - current) * amount
+}
+
+function lerpAngle(current, target, amount) {
+  const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current))
+  return current + delta * amount
+}
+
+function smoothVehicleState(previous = {}, next) {
+  const smoothing = previous.__fresh ? 0.28 : 1
+  return {
+    ...next,
+    x: lerp(previous.x ?? next.x, next.x, smoothing),
+    y: lerp(previous.y ?? next.y, next.y, smoothing),
+    speed: lerp(previous.speed ?? next.speed ?? 0, next.speed ?? 0, 0.18),
+    angle: lerpAngle(previous.angle ?? next.angle ?? 0, next.angle ?? 0, 0.22),
+    steer: lerp(previous.steer ?? 0, next.steer ?? 0, 0.2),
+    suspension: lerp(previous.suspension ?? 0, next.suspension ?? 0, 0.12),
+    __fresh: true,
+  }
+}
+
 function drawVehicle(ctx, v) {
   const { x, y, dir, type, waiting } = v
-  const isVert = dir === 'north' || dir === 'south'
-  const w = type === 'bus' ? (isVert ? 14 : 22) : type === 'truck' ? (isVert ? 12 : 18) : isVert ? 10 : 16
-  const h = type === 'bus' ? (isVert ? 22 : 14) : type === 'truck' ? (isVert ? 18 : 12) : isVert ? 16 : 10
+  const w = type === 'bus' ? 14 : type === 'truck' ? 12 : 10
+  const h = type === 'bus' ? 24 : type === 'truck' ? 20 : 17
+  const speed = v.speed ?? 0
+  const bodyLean = (v.steer ?? 0) * 0.7
+  const suspension = (v.suspension ?? 0) * Math.min(1.6, speed * 0.28)
 
   ctx.save()
   ctx.translate(x, y)
+  ctx.rotate(v.angle ?? 0)
+  ctx.translate(bodyLean, suspension)
 
   // Glow for waiting vehicles
   if (waiting) {
@@ -149,25 +176,39 @@ function drawVehicle(ctx, v) {
   roundRect(ctx, -w / 2, -h / 2, w, h, 3)
   ctx.fill()
 
+  ctx.strokeStyle = '#ffffff24'
+  ctx.lineWidth = 1
+  ctx.stroke()
+
   // Windows
   ctx.fillStyle = '#ffffff30'
-  if (isVert) {
-    ctx.fillRect(-w / 2 + 2, -h / 2 + 2, w - 4, h / 3)
-  } else {
-    ctx.fillRect(-w / 2 + 2, -h / 2 + 2, w / 3, h - 4)
-  }
+  roundRect(ctx, -w / 2 + 2, -h / 2 + 3, w - 4, h / 3, 2)
+  ctx.fill()
+
+  // Wheels
+  ctx.fillStyle = '#05070b'
+  ctx.fillRect(-w / 2 - 1.5, -h / 2 + 3, 2, 5)
+  ctx.fillRect(w / 2 - 0.5, -h / 2 + 3, 2, 5)
+  ctx.fillRect(-w / 2 - 1.5, h / 2 - 8, 2, 5)
+  ctx.fillRect(w / 2 - 0.5, h / 2 - 8, 2, 5)
 
   // Headlights
   ctx.fillStyle = '#ffffffcc'
   ctx.shadowColor = '#ffffff'
   ctx.shadowBlur = 6
-  if (dir === 'south') { ctx.fillRect(-w / 2 + 2, h / 2 - 3, 3, 2); ctx.fillRect(w / 2 - 5, h / 2 - 3, 3, 2) }
-  if (dir === 'north') { ctx.fillRect(-w / 2 + 2, -h / 2 + 1, 3, 2); ctx.fillRect(w / 2 - 5, -h / 2 + 1, 3, 2) }
-  if (dir === 'east') { ctx.fillRect(w / 2 - 3, -h / 2 + 2, 2, 3); ctx.fillRect(w / 2 - 3, h / 2 - 5, 2, 3) }
-  if (dir === 'west') { ctx.fillRect(-w / 2 + 1, -h / 2 + 2, 2, 3); ctx.fillRect(-w / 2 + 1, h / 2 - 5, 2, 3) }
+  ctx.fillRect(-w / 2 + 2, -h / 2 + 1, 3, 2)
+  ctx.fillRect(w / 2 - 5, -h / 2 + 1, 3, 2)
+
+  if (speed > 0.15) {
+    ctx.globalAlpha = Math.min(0.35, speed / 12)
+    ctx.fillStyle = DIR_COLORS[dir]
+    roundRect(ctx, -w / 2 + 1, h / 2 - 1, w - 2, Math.min(10, speed * 1.4), 2)
+    ctx.fill()
+  }
 
   ctx.restore()
   ctx.shadowBlur = 0
+  ctx.globalAlpha = 1
 }
 
 function drawQueueBar(ctx, queues, activeDir, W, H) {
@@ -206,54 +247,84 @@ function drawQueueBar(ctx, queues, activeDir, W, H) {
 
 export default function IntersectionCanvas({ activeDir, phaseTimer, queues, vehicles, mode }) {
   const canvasRef = useRef(null)
+  const propsRef = useRef({ activeDir, phaseTimer, queues, vehicles, mode })
+  const displayVehiclesRef = useRef(new Map())
   const W = 500, H = 400
   const cx = W / 2, cy = H / 2
+
+  useEffect(() => {
+    propsRef.current = { activeDir, phaseTimer, queues, vehicles, mode }
+  }, [activeDir, phaseTimer, queues, vehicles, mode])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
+    let frameId = 0
 
-    ctx.clearRect(0, 0, W, H)
-    drawRoad(ctx, W, H)
+    const render = () => {
+      const {
+        activeDir: frameActiveDir,
+        phaseTimer: framePhaseTimer,
+        queues: frameQueues,
+        vehicles: frameVehicles,
+        mode: frameMode,
+      } = propsRef.current
 
-    // Traffic lights
-    const roadW = 70
-    drawTrafficLight(ctx, cx - roadW - 15, cy - roadW - 40, phaseTimer, activeDir, 'north')
-    drawTrafficLight(ctx, cx + roadW + 5, cy + roadW + 5, phaseTimer, activeDir, 'south')
-    drawTrafficLight(ctx, cx + roadW + 5, cy - roadW - 40, phaseTimer, activeDir, 'east')
-    drawTrafficLight(ctx, cx - roadW - 15, cy + roadW + 5, phaseTimer, activeDir, 'west')
+      ctx.clearRect(0, 0, W, H)
+      drawRoad(ctx, W, H)
 
-    // Vehicles
-    vehicles.forEach(v => drawVehicle(ctx, v))
+      // Traffic lights
+      const roadW = 70
+      drawTrafficLight(ctx, cx - roadW - 15, cy - roadW - 40, framePhaseTimer, frameActiveDir, 'north')
+      drawTrafficLight(ctx, cx + roadW + 5, cy + roadW + 5, framePhaseTimer, frameActiveDir, 'south')
+      drawTrafficLight(ctx, cx + roadW + 5, cy - roadW - 40, framePhaseTimer, frameActiveDir, 'east')
+      drawTrafficLight(ctx, cx - roadW - 15, cy + roadW + 5, framePhaseTimer, frameActiveDir, 'west')
 
-    // Queue bars
-    drawQueueBar(ctx, queues, activeDir, W, H)
+      const nextIds = new Set(frameVehicles.map(v => v.id))
+      for (const id of displayVehiclesRef.current.keys()) {
+        if (!nextIds.has(id)) displayVehiclesRef.current.delete(id)
+      }
 
-    // Phase timer
-    ctx.font = '700 28px JetBrains Mono, monospace'
-    ctx.textAlign = 'center'
-    const phase = phaseDirections(activeDir)
-    ctx.fillStyle = DIR_COLORS[phase[0]]
-    ctx.shadowColor = ctx.fillStyle
-    ctx.shadowBlur = 20
-    ctx.fillText(phaseTimer, cx, cy + 12)
-    ctx.shadowBlur = 0
+      frameVehicles.forEach(v => {
+        const previous = displayVehiclesRef.current.get(v.id)
+        const next = smoothVehicleState(previous, v)
+        displayVehiclesRef.current.set(v.id, next)
+        drawVehicle(ctx, next)
+      })
 
-    ctx.font = '500 9px Sora, sans-serif'
-    ctx.fillStyle = '#ffffff50'
-    ctx.fillText(`${phase[0].toUpperCase()} + ${phase[1].toUpperCase()} GREEN`, cx, cy + 26)
+      // Queue bars
+      drawQueueBar(ctx, frameQueues, frameActiveDir, W, H)
 
-    // Mode badge
-    ctx.font = '600 10px JetBrains Mono, monospace'
-    ctx.fillStyle = mode === 'ai' ? '#00e676' : '#ffd600'
-    ctx.shadowColor = ctx.fillStyle
-    ctx.shadowBlur = 10
-    ctx.textAlign = 'left'
-    ctx.fillText(mode === 'ai' ? '◈ AI CONTROL' : '◫ FIXED CYCLE', 10, H - 10)
-    ctx.shadowBlur = 0
+      // Phase timer
+      ctx.font = '700 28px JetBrains Mono, monospace'
+      ctx.textAlign = 'center'
+      const phase = phaseDirections(frameActiveDir)
+      ctx.fillStyle = DIR_COLORS[phase[0]]
+      ctx.shadowColor = ctx.fillStyle
+      ctx.shadowBlur = 20
+      ctx.fillText(framePhaseTimer, cx, cy + 12)
+      ctx.shadowBlur = 0
 
-  }, [activeDir, phaseTimer, queues, vehicles, mode])
+      ctx.font = '500 9px Sora, sans-serif'
+      ctx.fillStyle = '#ffffff50'
+      ctx.fillText(`${phase[0].toUpperCase()} + ${phase[1].toUpperCase()} GREEN`, cx, cy + 26)
+
+      // Mode badge
+      ctx.font = '600 10px JetBrains Mono, monospace'
+      ctx.fillStyle = frameMode === 'ai' ? '#00e676' : '#ffd600'
+      ctx.shadowColor = ctx.fillStyle
+      ctx.shadowBlur = 10
+      ctx.textAlign = 'left'
+      ctx.fillText(frameMode === 'ai' ? 'AI CONTROL' : 'FIXED CYCLE', 10, H - 10)
+      ctx.shadowBlur = 0
+
+      frameId = requestAnimationFrame(render)
+    }
+
+    render()
+    return () => cancelAnimationFrame(frameId)
+  }, [])
 
   return (
     <canvas
