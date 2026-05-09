@@ -373,7 +373,22 @@ class TrafficSimulator:
             ["straight", "left", "right"],
             weights=[0.55, 0.22, 0.23], k=1
         )[0]
-        lane_idx = 0 if turn == "left" else (1 if turn == "right" else self._rng.randint(0, 1))
+        if direction in {"north", "west"}:
+            # mirrored orientation
+            if turn == "left":
+                lane_idx = 1
+            elif turn == "right":
+                lane_idx = 0
+            else:
+                lane_idx = self._rng.randint(0, 1)
+        else:
+            # south/east normal orientation
+            if turn == "left":
+                lane_idx = 0
+            elif turn == "right":
+                lane_idx = 1
+            else:
+                lane_idx = self._rng.randint(0, 1)
 
         if direction == "north":
             x, y = LANE_X["north"][lane_idx], OFF_SCREEN_NORTH
