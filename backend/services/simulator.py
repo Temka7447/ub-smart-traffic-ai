@@ -432,10 +432,13 @@ class TrafficSimulator:
         return x <= CENTER_X + 6
 
     def _stop_distance(self, direction: str, x: float, y: float) -> float:
-        if direction == "north": return 128.0 - y
-        if direction == "south": return y - 272.0
-        if direction == "east":  return 178.0 - x
-        return x - 322.0
+        if direction == "north":
+            return 100.0 - y
+        if direction == "south":
+         return y - 300.0
+        if direction == "east":
+            return 150.0 - x
+        return x - 350.0
 
     def _angle_lerp(self, current: float, target: float, ratio: float) -> float:
         delta = (target - current + math.pi) % (math.pi * 2) - math.pi

@@ -19,6 +19,34 @@ function phaseDirections(activeDir) {
     : ['east', 'west']
 }
 
+function drawCrosswalk(ctx, x, y, direction) {
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+
+  const stripeCount = 16;
+  const stripeWidth = 3;
+  const gap = 6;
+
+  for (let i = 0; i < stripeCount; i++) {
+    if (direction === "horizontal") {
+      ctx.fillRect(x + i * (stripeWidth + gap), y, stripeWidth, 10);
+    } else {
+      ctx.fillRect(x, y + i * (stripeWidth + gap), 10, stripeWidth);
+    }
+  }
+}
+
+function drawDashedLane(ctx, x1, y1, x2, y2) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.65)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([12, 10]);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawRoad(ctx, W, H) {
   // Background
   ctx.fillStyle = '#0d1420'
@@ -49,8 +77,8 @@ function drawRoad(ctx, W, H) {
   })
 
   // Dashed center lines
-  ctx.setLineDash([20, 15])
-  ctx.strokeStyle = '#ffffff30'
+  ctx.setLineDash([20, 0])
+  ctx.strokeStyle = '#ffffff'
   ctx.lineWidth = 2
 
   ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, cy - roadW); ctx.stroke()
@@ -60,14 +88,45 @@ function drawRoad(ctx, W, H) {
   ctx.setLineDash([])
 
   // Crosswalks
-  const cwW = 5, cwGap = 10, cwLen = 30
-  ctx.fillStyle = '#ffffff18'
-  for (let i = 0; i < 5; i++) {
-    // North crosswalk
-    ctx.fillRect(cx - roadW + i * (cwW + cwGap), cy - roadW - cwLen, cwW, cwLen)
-    // South crosswalk
-    ctx.fillRect(cx - roadW + i * (cwW + cwGap), cy + roadW, cwW, cwLen)
-  }
+  drawCrosswalk(ctx, cx - 68, cy - 84, "horizontal")
+  drawCrosswalk(ctx, cx - 68, cy + 74, "horizontal")
+  drawCrosswalk(ctx, cx - 85, cy - 60, "vertical")
+  drawCrosswalk(ctx, cx + 75, cy - 60, "vertical")
+
+  // Stop lines
+  ctx.strokeStyle = '#ffffffaa'
+  ctx.lineWidth = 3
+
+  // north
+  ctx.beginPath()
+  ctx.moveTo(cx - roadW, cy - 90)
+  ctx.lineTo(cx + roadW, cy - 90)
+  ctx.stroke()
+
+  // south
+  ctx.beginPath() 
+  ctx.moveTo(cx - roadW, cy + 90) 
+  ctx.lineTo(cx + roadW, cy + 90)
+  ctx.stroke()
+
+  // west
+  ctx.beginPath()
+  ctx.moveTo(cx - 90, cy - roadW)
+  ctx.lineTo(cx - 90, cy + roadW)
+  ctx.stroke()
+
+  // east
+  ctx.beginPath()
+  ctx.moveTo(cx + 90, cy - roadW)
+  ctx.lineTo(cx + 90, cy + roadW)
+  ctx.stroke()
+
+  // Extra lane dividers
+  drawDashedLane(ctx, cx - 25, 0, cx - 25, H)
+  drawDashedLane(ctx, cx + 25, 0, cx + 25, H)
+  drawDashedLane(ctx, 0, cy - 25, W, cy - 25)
+  drawDashedLane(ctx, 0, cy + 25, W, cy + 25)
+  
 
   // Direction labels
   ctx.font = '600 11px Sora, sans-serif'
@@ -83,35 +142,65 @@ function drawRoad(ctx, W, H) {
   })
 }
 
-function drawTrafficLight(ctx, x, y, phase, activeDir, lightDir) {
-  const isGreen = phaseDirections(activeDir).includes(lightDir)
+function drawTrafficLight(ctx, x, y, signalState = 'green', activeDir, lightDir, hasLeftTurn = false)  {
+  const isActiveDir = phaseDirections(activeDir).includes(lightDir)
+
+  const isGreen = signalState === 'green' && isActiveDir
+  const isYellow = signalState === 'yellow' && isActiveDir
+  const isRed = !isGreen && !isYellow
+
   const r = 8
   const pad = 4
-  const boxH = r * 6 + pad * 4
-  const boxW = r * 2 + pad * 2
+  const boxH = r * 8 + pad * 5
+  const boxW = hasLeftTurn ? 44 : r * 2 + pad * 2
 
-  // Housing
   ctx.fillStyle = '#111827'
   ctx.strokeStyle = '#374151'
   ctx.lineWidth = 1
   roundRect(ctx, x - r - pad, y - pad, boxW, boxH, 4)
-  ctx.fill(); ctx.stroke()
+  ctx.fill()
+  ctx.stroke()
 
   // Red
   ctx.beginPath()
   ctx.arc(x, y + r, r, 0, Math.PI * 2)
-  ctx.fillStyle = !isGreen ? '#ff1744' : '#3d0a12'
-  if (!isGreen) { ctx.shadowColor = '#ff1744'; ctx.shadowBlur = 12 }
+  ctx.fillStyle = isRed ? '#ff1744' : '#3d0a12'
+  if (isRed) {
+    ctx.shadowColor = '#ff1744'
+    ctx.shadowBlur = 12
+  }
+  ctx.fill()
+  ctx.shadowBlur = 0
+
+  // Yellow
+  ctx.beginPath()
+  ctx.arc(x, y + r * 3.5, r, 0, Math.PI * 2)
+  ctx.fillStyle = isYellow ? '#ffd600' : '#3a3000'
+  if (isYellow) {
+    ctx.shadowColor = '#ffd600'
+    ctx.shadowBlur = 12
+  }
   ctx.fill()
   ctx.shadowBlur = 0
 
   // Green
   ctx.beginPath()
-  ctx.arc(x, y + r * 4, r, 0, Math.PI * 2)
+  ctx.arc(x, y + r * 6, r, 0, Math.PI * 2)
   ctx.fillStyle = isGreen ? '#00e676' : '#00331a'
-  if (isGreen) { ctx.shadowColor = '#00e676'; ctx.shadowBlur = 12 }
+  if (isGreen) {
+    ctx.shadowColor = '#00e676'
+    ctx.shadowBlur = 12
+  }
   ctx.fill()
   ctx.shadowBlur = 0
+
+  // Left turn arrow signal
+  if (hasLeftTurn) {
+    ctx.font = 'bold 18px Arial'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = isGreen ? '#00e676' : isYellow ? '#ffd600' : '#3d0a12'
+    ctx.fillText('←', x + 22, y + r * 3.8)
+  }
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -245,16 +334,16 @@ function drawQueueBar(ctx, queues, activeDir, W, H) {
   })
 }
 
-export default function IntersectionCanvas({ activeDir, phaseTimer, queues, vehicles, mode }) {
+export default function IntersectionCanvas({ activeDir, phaseTimer, signalState, queues, vehicles, mode }) {
   const canvasRef = useRef(null)
-  const propsRef = useRef({ activeDir, phaseTimer, queues, vehicles, mode })
+  const propsRef = useRef({ activeDir, phaseTimer, signalState, queues, vehicles, mode })
   const displayVehiclesRef = useRef(new Map())
   const W = 500, H = 400
   const cx = W / 2, cy = H / 2
 
   useEffect(() => {
-    propsRef.current = { activeDir, phaseTimer, queues, vehicles, mode }
-  }, [activeDir, phaseTimer, queues, vehicles, mode])
+    propsRef.current = { activeDir, phaseTimer, signalState, queues, vehicles, mode }
+ }, [activeDir, phaseTimer, signalState, queues, vehicles, mode])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -266,6 +355,7 @@ export default function IntersectionCanvas({ activeDir, phaseTimer, queues, vehi
       const {
         activeDir: frameActiveDir,
         phaseTimer: framePhaseTimer,
+        signalState: frameSignalState = 'green',
         queues: frameQueues,
         vehicles: frameVehicles,
         mode: frameMode,
@@ -276,10 +366,10 @@ export default function IntersectionCanvas({ activeDir, phaseTimer, queues, vehi
 
       // Traffic lights
       const roadW = 70
-      drawTrafficLight(ctx, cx - roadW - 15, cy - roadW - 40, framePhaseTimer, frameActiveDir, 'north')
-      drawTrafficLight(ctx, cx + roadW + 5, cy + roadW + 5, framePhaseTimer, frameActiveDir, 'south')
-      drawTrafficLight(ctx, cx + roadW + 5, cy - roadW - 40, framePhaseTimer, frameActiveDir, 'east')
-      drawTrafficLight(ctx, cx - roadW - 15, cy + roadW + 5, framePhaseTimer, frameActiveDir, 'west')
+      drawTrafficLight(ctx, cx - roadW - 15, cy - roadW - 40, frameSignalState, frameActiveDir, 'north')
+      drawTrafficLight(ctx, cx + roadW + 5, cy + roadW + 5, frameSignalState, frameActiveDir, 'south')
+      drawTrafficLight(ctx, cx + roadW + 5, cy - roadW - 40, frameSignalState, frameActiveDir, 'east')
+      drawTrafficLight(ctx, cx - roadW - 15, cy + roadW + 5, frameSignalState, frameActiveDir, 'west')
 
       const nextIds = new Set(frameVehicles.map(v => v.id))
       for (const id of displayVehiclesRef.current.keys()) {

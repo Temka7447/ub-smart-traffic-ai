@@ -196,11 +196,12 @@ export default function App() {
                   ГЭРЛЭН ДОХИОНЫ СИМУЛЯЦ · {sim.mode === 'ai' ? 'AI ГОРИМ' : 'ТОГТМОЛ ГОРИМ'}
                 </div>
                 <IntersectionCanvas
-                  activeDir={sim.activeDir}
-                  phaseTimer={sim.phaseTimer}
-                  queues={sim.queues}
-                  vehicles={sim.vehicles}
-                  mode={sim.mode}
+                 activeDir={sim.activeDir}
+                 phaseTimer={sim.phaseTimer}
+                 signalState={sim.signalState}
+                 queues={sim.queues}
+                 vehicles={sim.vehicles}
+                 mode={sim.mode}
                 />
               </div>
 

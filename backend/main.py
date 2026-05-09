@@ -12,11 +12,15 @@ from backend.routers.dataset import router as dataset_router
 from backend.services.dataset_service import init_dataset
 from backend.services.simulator import TrafficSimulator
 
+from pathlib import Path
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. Датасет ачаалах
-    dataset_path = r"C:\Users\Dell\Downloads\dev-hackaton2026\backend\data\UB_Traffic_Dataset1.csv"
+
+
+    dataset_path = Path(__file__).parent / "data" / "UB_Traffic_Dataset1.csv"
     try:
         loader = init_dataset(dataset_path)
         app.state.dataset = loader

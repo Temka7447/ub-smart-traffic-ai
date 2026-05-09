@@ -10,15 +10,18 @@ LANE_X: dict[str, list[float]] = {
     "south": [265.0, 280.0],
 }
 LANE_Y: dict[str, list[float]] = {
-    "east": [165.0, 180.0],
-    "west": [220.0, 235.0],
+    "east": [220.0, 235.0],
+    "west": [165.0, 180.0],
 }
 
-STOP_LINE: dict[str, float] = {
-    "north": BOX_Y1,
-    "south": BOX_Y2,
-    "east": BOX_X1,
-    "west": BOX_X2,
+CROSSWALK_OFFSET = 18.0
+STOP_LINE_OFFSET = 30.0
+
+STOP_LINE = {
+    "north": BOX_Y1 - STOP_LINE_OFFSET,
+    "south": BOX_Y2 + STOP_LINE_OFFSET,
+    "east": BOX_X1 - STOP_LINE_OFFSET,
+    "west": BOX_X2 + STOP_LINE_OFFSET,
 }
 
 SAFE_GAP = 90.0
