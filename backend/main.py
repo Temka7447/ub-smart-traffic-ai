@@ -1,16 +1,34 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.routers import analytics, signals, simulation
+from backend.routers.dataset import router as dataset_router
+from backend.services.dataset_service import init_dataset
 from backend.services.simulator import TrafficSimulator
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 1. Датасет ачаалах
+    dataset_path = r"C:\Users\Dell\Downloads\dev-hackaton2026\backend\data\UB_Traffic_Dataset1.csv"
+    try:
+        loader = init_dataset(dataset_path)
+        app.state.dataset = loader
+        print(f"[dataset] OK — {len(loader.df):,} мөр ачааллаа")
+    except FileNotFoundError:
+        print(f"[dataset] WARN: файл олдсонгүй → {dataset_path}")
+        app.state.dataset = None
+    except Exception as e:
+        print(f"[dataset] ERROR: {e}")
+        app.state.dataset = None
+
+    # 2. Симулятор эхлүүлэх
     simulator_service = TrafficSimulator()
     app.state.simulator = simulator_service
     await simulator_service.start_loop()
@@ -22,7 +40,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Traffic Signal Simulator API",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -51,3 +69,4 @@ app.include_router(signals.router)
 app.include_router(simulation.router)
 app.include_router(simulation.ws_router)
 app.include_router(analytics.router)
+app.include_router(dataset_router)

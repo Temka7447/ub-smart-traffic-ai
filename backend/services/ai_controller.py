@@ -21,8 +21,8 @@ STOP_LINE: dict[str, float] = {
     "west": BOX_X2,
 }
 
-SAFE_GAP = 58.0
-SPAWN_CLEAR = 78.0
+SAFE_GAP = 90.0
+SPAWN_CLEAR = 96.0
 
 MIN_GREEN = 12
 MAX_GREEN = 90
@@ -56,7 +56,7 @@ def calculate_green_time(
 
         if vehicle_type_counts and direction in vehicle_type_counts:
             type_counts = vehicle_type_counts[direction]
-            weighted = sum(type_counts.get(vehicle_type, 0) * weight for vehicle_type, weight in VEHICLE_WEIGHTS.items())
+            weighted = sum(type_counts.get(vt, 0) * w for vt, w in VEHICLE_WEIGHTS.items())
         else:
             weighted = float(count)
 
@@ -85,13 +85,10 @@ def should_yield(
 
     if vehicle_dir == "north":
         return (BOX_Y1 - approach) <= vehicle_y < BOX_Y1
-
     if vehicle_dir == "south":
         return BOX_Y2 < vehicle_y <= (BOX_Y2 + approach)
-
     if vehicle_dir == "east":
         return (BOX_X1 - approach) <= vehicle_x < BOX_X1
-
     if vehicle_dir == "west":
         return BOX_X2 < vehicle_x <= (BOX_X2 + approach)
 
@@ -103,12 +100,27 @@ def get_safe_speed(
     same_lane_vehicles: list[dict],
     base_speed: float = 2.5,
 ) -> float:
+    """
+    Урдаа яваа машинтай зайг хэмжиж аюулгүй хурд буцаана.
+
+    base_speed=1.0 гэж дуудвал 0.0–1.0 харьцаа буцаана,
+    ингэснээр дуудагч dynamics["cruise"]-тэй шууд үржүүлж болно.
+
+    Gap тооцоо:
+        gap <= hard_stop (18px) → 0.0  (бүрэн зогс)
+        gap <  SAFE_GAP  (90px) → квадрат ratio-р бууруулна
+        gap >= SAFE_GAP         → base_speed (бүтэн хурд)
+    """
     vehicle_dir = vehicle["dir"]
     vehicle_x = float(vehicle["x"])
     vehicle_y = float(vehicle["y"])
-    min_gap = float("inf")
 
+    min_gap = float("inf")
     for other in same_lane_vehicles:
+        # Эргэлтийн дунд байгаа машинуудыг тооцохгүй
+        if other.get("turnProgress", 0.0) > 0.05:
+            continue
+
         other_x = float(other["x"])
         other_y = float(other["y"])
 
@@ -127,11 +139,13 @@ def get_safe_speed(
     if min_gap == float("inf"):
         return base_speed
 
-    if min_gap < 12:
+    hard_stop = 18.0
+
+    if min_gap <= hard_stop:
         return 0.0
 
     if min_gap < SAFE_GAP:
-        ratio = (min_gap - 12) / (SAFE_GAP - 12)
-        return round(base_speed * max(0.05, ratio), 2)
+        ratio = (min_gap - hard_stop) / (SAFE_GAP - hard_stop)
+        return round(base_speed * ratio * ratio, 3)
 
     return base_speed
