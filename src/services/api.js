@@ -52,6 +52,11 @@ export const setSpeed = async (multiplier) => request('/api/simulation/speed', {
   body: JSON.stringify({ multiplier }),
 })
 
+export const switchMode = async (mode) => request('/api/mode', {
+  method: 'POST',
+  body: JSON.stringify({ mode }),
+})
+
 export const getSimulationState = async () => request('/api/simulation/state')
 
 export const getComparison = async () => request('/api/analytics/comparison')

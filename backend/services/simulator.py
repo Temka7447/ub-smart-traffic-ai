@@ -24,6 +24,7 @@ from backend.services.ai_controller import (
     get_safe_speed,
     should_yield,
 )
+from backend.services.ai_runtime_manager import AIRuntimeManager, AIRuntimeState, normalize_mode
 
 # ═══════════════════════════════════════════════════════════
 # CANVAS & PHYSICS
@@ -183,6 +184,8 @@ class TrafficSimulator:
         self._max_vehicles   = PeakLoadConfig.NORMAL_MAX_VEHICLES
         self._spawn_chance   = PeakLoadConfig.NORMAL_SPAWN_CHANCE
         self._weather_speed_factor = 1.0
+        self.ai_runtime = AIRuntimeManager(num_intersections=len(INTERSECTION_POSITIONS))
+        self._ai_state = AIRuntimeState()
 
         # ── KPI хянах ──
         self._queue_snapshots: list[dict[str, int]] = []   # дарааллын хандлага
@@ -323,16 +326,43 @@ class TrafficSimulator:
 
     def _refresh_green_times(self) -> None:
         if self.mode == "ai":
-            self.green_times = calculate_green_time(
-                self.queues,
-                is_peak_hour=self.peak_hour,
-                bus_directions=self.bus_directions,
-                emergency_directions=self.emergency_directions,
-                vehicle_type_counts=self._build_vehicle_type_counts(),
-            )
+            self.green_times = self.ai_runtime.green_times
         else:
             # Тогтмол: CSV-ийн green_sec=65 — хэзээ ч өөрчлөгддөггүй
             self.green_times = {d: FIXED_GREEN_SEC for d in DIRECTIONS}
+
+    def _set_mode_locked(self, mode: str) -> None:
+        next_mode = normalize_mode(mode)
+        if next_mode == self.mode:
+            return
+
+        self.mode = next_mode
+        if self.mode == "ai":
+            self.ai_runtime.reset()
+            self.ai_runtime.force_decision_next_tick()
+            self._apply_ai_runtime_state_locked()
+        else:
+            self.signal_state = "green"
+            self.phase_timer = FIXED_GREEN_SEC
+            self._ai_state = AIRuntimeState()
+
+        self._apply_mode_params()
+        self._refresh_green_times()
+
+    def _apply_ai_runtime_state_locked(self) -> None:
+        self._ai_state = self.ai_runtime.tick(
+            queues=self.queues,
+            lane_queues=self.lane_queues,
+            intersections=self.intersections,
+            vehicles=self.vehicles,
+            bus_directions=self.bus_directions,
+            emergency_directions=self.emergency_directions,
+            dt=1.0,
+        )
+        self.active_dir = self._ai_state.active_dir
+        self.signal_state = self._ai_state.signal_state
+        self.phase_timer = self._ai_state.phase_timer
+        self.green_times = dict(self._ai_state.green_times)
 
     # ═══════════════════════════════════════════════════════
     # МАШИН ҮҮСГЭХ
@@ -582,31 +612,26 @@ class TrafficSimulator:
 
             for _ in range(elapsed_seconds):
                 # ── Дохионы фаз ──────────────────────────────────────
-                self.phase_timer -= 1
-                if self.phase_timer <= 0:
-                    if self.signal_state == "green":
-                        self.signal_state = "yellow"
-                        self.phase_timer  = FIXED_YELLOW_SEC
-                    elif self.signal_state == "yellow":
-                        self.signal_state = "all_red"
-                        self.phase_timer  = 2
-                    else:
-                        # Чиглэл солих
-                        if self.emergency_directions:
-                            self.active_dir = "north" if self.emergency_directions[0] in {"north", "south"} else "east"
+                if self.mode == "ai":
+                    self._apply_ai_runtime_state_locked()
+                else:
+                    self.phase_timer -= 1
+                    if self.phase_timer <= 0:
+                        if self.signal_state == "green":
+                            self.signal_state = "yellow"
+                            self.phase_timer  = FIXED_YELLOW_SEC
+                        elif self.signal_state == "yellow":
+                            self.signal_state = "all_red"
+                            self.phase_timer  = 2
                         else:
-                            self.active_dir = "east" if self.active_dir in {"north", "south"} else "north"
-                        self.signal_state = "green"
-                        self._refresh_green_times()
-                        pair = self._phase_directions()
-
-                        if self.mode == "fixed":
-                            # ТОГТМОЛ: CSV-ийн cycle_sec=120 → нэг фаз=65с
+                            # Чиглэл солих
+                            if self.emergency_directions:
+                                self.active_dir = "north" if self.emergency_directions[0] in {"north", "south"} else "east"
+                            else:
+                                self.active_dir = "east" if self.active_dir in {"north", "south"} else "north"
+                            self.signal_state = "green"
+                            self._refresh_green_times()
                             self.phase_timer = FIXED_GREEN_SEC
-                        else:
-                            # AI: дарааллын уртаас хамааран зохицуулна
-                            ai_phase = max(self.green_times[pair[0]], self.green_times[pair[1]])
-                            self.phase_timer = max(12, min(90, ai_phase))
 
                 # ── Дараалал нэмэх — ОРГИЛ ЦАГТ МАШ ХУРДАН НЭМЭГДЭНЭ ──
                 updated_queues = dict(self.queues)
@@ -705,7 +730,11 @@ class TrafficSimulator:
                         "signalState": ns,
                         "greenTimes": calculate_green_time(nq),
                     })
-                self.intersections = next_intersections
+                self.intersections = (
+                    self.ai_runtime.merge_intersections(next_intersections)
+                    if self.mode == "ai"
+                    else next_intersections
+                )
 
                 self.sim_time += 1
                 total_q = sum(self.queues.values())
@@ -795,6 +824,13 @@ class TrafficSimulator:
                 "mode_discharge_rate":   self._discharge_rate,
                 "weather_speed_factor":  round(self._weather_speed_factor, 2),
             },
+            aiActivePhase=self._ai_state.ai_active_phase,
+            aiDecisionReason=self._ai_state.ai_decision_reason,
+            aiCongestionState=dict(self._ai_state.ai_congestion_state),
+            antiGridlockActive=self._ai_state.anti_gridlock_active,
+            pedestrianWaiting=dict(self._ai_state.pedestrian_waiting),
+            emergencyActive=self._ai_state.emergency_active,
+            neighborPressure=dict(self._ai_state.neighbor_pressure),
         )
 
     # ═══════════════════════════════════════════════════════
@@ -807,7 +843,7 @@ class TrafficSimulator:
     async def start(self, payload: SimulationStartRequest) -> SimulationState:
         async with self._lock:
             if payload.mode is not None:
-                self.mode = payload.mode
+                self._set_mode_locked(payload.mode)
             if payload.peak_hour is not None:
                 self.peak_hour = payload.peak_hour
             if payload.heavy_north is not None:
@@ -825,11 +861,15 @@ class TrafficSimulator:
             self._apply_mode_params()
             self._refresh_green_times()
 
-            if self.mode == "ai":
-                self.phase_timer = max(12, min(90, self.phase_timer))
-
             state = self._snapshot_locked()
 
+        await self._broadcast_state(state)
+        return state
+
+    async def set_mode(self, mode: str) -> SimulationState:
+        async with self._lock:
+            self._set_mode_locked(mode)
+            state = self._snapshot_locked()
         await self._broadcast_state(state)
         return state
 
@@ -898,6 +938,8 @@ class TrafficSimulator:
         self._vehicle_id  = 0
         self._second_accumulator = 0.0
         self._queue_snapshots    = []
+        self.ai_runtime.reset()
+        self._ai_state = AIRuntimeState()
         self._apply_mode_params()
         self._refresh_green_times()
 

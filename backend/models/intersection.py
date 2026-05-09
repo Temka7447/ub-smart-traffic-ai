@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -89,6 +89,13 @@ class IntersectionNode(BaseModel):
     timer: int
     signalState: SignalState
     greenTimes: dict[str, int]
+    activePhase: str | None = None
+    aiReason: str = ""
+    antiGridlock: bool = False
+    congestionIndex: float = 0.0
+    pedestrianWaiting: dict[str, int] = Field(default_factory=dict)
+    emergencyActive: bool = False
+    neighborPressure: dict[str, float] = Field(default_factory=dict)
 
 
 class ComparisonStats(BaseModel):
@@ -137,3 +144,10 @@ class SimulationState(BaseModel):
     busDirections: list[str]
     emergencyDirections: list[str]
     kpis: dict[str, float]
+    aiActivePhase: str | None = None
+    aiDecisionReason: str = ""
+    aiCongestionState: dict[str, Any] = Field(default_factory=dict)
+    antiGridlockActive: bool = False
+    pedestrianWaiting: dict[str, int] = Field(default_factory=dict)
+    emergencyActive: bool = False
+    neighborPressure: dict[str, float] = Field(default_factory=dict)

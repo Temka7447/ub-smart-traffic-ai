@@ -43,7 +43,7 @@ export default function ControlPanel({
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
-            onClick={() => { setMode('fixed'); setIsRunning(false) }}
+            onClick={() => setMode('fixed')}
             style={{
               flex: 1, padding: '10px', borderRadius: '8px',
               border: `1px solid ${mode === 'fixed' ? '#ffd600' : '#1e2d4a'}`,
@@ -58,7 +58,7 @@ export default function ControlPanel({
             ◫ Тогтмол цикл
           </button>
           <button
-            onClick={() => { setMode('ai'); setIsRunning(false) }}
+            onClick={() => setMode('ai')}
             style={{
               flex: 1, padding: '10px', borderRadius: '8px',
               border: `1px solid ${mode === 'ai' ? '#00e676' : '#1e2d4a'}`,

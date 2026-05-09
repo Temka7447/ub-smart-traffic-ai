@@ -59,7 +59,9 @@ function QueueBar({ dir, count, maxCount = 40, greenTimes, activeDir }) {
 
 export default function MetricsPanel({
   queues, activeDir, phaseTimer, totalPassed,
-  mode, avgFixedWait, avgAIWait, greenTimes, simTime, peakHour, heavyNorth
+  mode, avgFixedWait, avgAIWait, greenTimes, simTime, peakHour, heavyNorth,
+  aiActivePhase, aiDecisionReason, aiCongestionState,
+  antiGridlockActive, pedestrianWaiting, emergencyActive, neighborPressure,
 }) {
   const totalQueue = Object.values(queues).reduce((a, b) => a + b, 0)
   const dirs = ['north', 'south', 'east', 'west']
@@ -122,6 +124,68 @@ export default function MetricsPanel({
           ))}
         </div>
       </div>
+
+      {mode === 'ai' && (
+        <div style={{
+          background: '#131929',
+          border: `1px solid ${antiGridlockActive ? '#ff6d00' : '#1e2d4a'}`,
+          borderRadius: '12px',
+          padding: '14px',
+        }}>
+          <div style={{ fontSize: '10px', color: '#4a6080', letterSpacing: '0.1em', marginBottom: '10px', fontFamily: 'JetBrains Mono' }}>
+            AI RUNTIME
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '10px' }}>
+            <div style={{ background: '#0d1420', border: '1px solid #1e2d4a', borderRadius: '8px', padding: '9px' }}>
+              <div style={{ fontSize: '9px', color: '#4a6080', marginBottom: '4px' }}>Phase</div>
+              <div style={{ fontSize: '12px', color: '#00e676', fontFamily: 'JetBrains Mono', fontWeight: 700 }}>
+                {aiActivePhase || 'pending'}
+              </div>
+            </div>
+            <div style={{ background: '#0d1420', border: '1px solid #1e2d4a', borderRadius: '8px', padding: '9px' }}>
+              <div style={{ fontSize: '9px', color: '#4a6080', marginBottom: '4px' }}>Congestion</div>
+              <div style={{ fontSize: '12px', color: '#00e5ff', fontFamily: 'JetBrains Mono', fontWeight: 700 }}>
+                {aiCongestionState?.state || 'clear'} {(aiCongestionState?.index ?? 0).toFixed?.(2) ?? '0.00'}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+            {[
+              { label: 'anti-gridlock', active: antiGridlockActive, color: '#ff6d00' },
+              { label: 'emergency', active: emergencyActive, color: '#ff1744' },
+              { label: `ped ${Object.values(pedestrianWaiting || {}).reduce((a, b) => a + b, 0)}`, active: true, color: '#7a9cc8' },
+              { label: `nbr ${Object.keys(neighborPressure || {}).length}`, active: true, color: '#7a9cc8' },
+            ].map(({ label, active, color }) => (
+              <span key={label} style={{
+                padding: '4px 8px',
+                borderRadius: '6px',
+                border: `1px solid ${active ? color : '#1e2d4a'}`,
+                color: active ? color : '#4a6080',
+                background: active ? color + '15' : '#0d1420',
+                fontSize: '9px',
+                fontFamily: 'JetBrains Mono',
+              }}>
+                {label}
+              </span>
+            ))}
+          </div>
+
+          <div style={{
+            background: '#0d1420',
+            border: '1px solid #1e2d4a',
+            borderRadius: '8px',
+            padding: '9px',
+            color: '#7a9cc8',
+            fontSize: '10px',
+            lineHeight: 1.5,
+            fontFamily: 'JetBrains Mono',
+            wordBreak: 'break-word',
+          }}>
+            {aiDecisionReason || 'Waiting for first AI decision'}
+          </div>
+        </div>
+      )}
 
       {/* Queue Lengths */}
       <div style={{

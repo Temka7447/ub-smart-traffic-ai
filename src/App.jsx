@@ -228,6 +228,13 @@ export default function App() {
               simTime={sim.simTime}
               peakHour={sim.peakHour}
               heavyNorth={sim.heavyNorth}
+              aiActivePhase={sim.aiActivePhase}
+              aiDecisionReason={sim.aiDecisionReason}
+              aiCongestionState={sim.aiCongestionState}
+              antiGridlockActive={sim.antiGridlockActive}
+              pedestrianWaiting={sim.pedestrianWaiting}
+              emergencyActive={sim.emergencyActive}
+              neighborPressure={sim.neighborPressure}
             />
           </div>
         )}

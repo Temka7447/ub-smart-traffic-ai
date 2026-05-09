@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.routers import analytics, signals, simulation
+from backend.routers import analytics, mode, signals, simulation
 from backend.routers.dataset import router as dataset_router
 from backend.services.dataset_service import init_dataset
 from backend.services.simulator import TrafficSimulator
@@ -70,6 +70,7 @@ async def health() -> dict[str, str]:
 
 
 app.include_router(signals.router)
+app.include_router(mode.router)
 app.include_router(simulation.router)
 app.include_router(simulation.ws_router)
 app.include_router(analytics.router)

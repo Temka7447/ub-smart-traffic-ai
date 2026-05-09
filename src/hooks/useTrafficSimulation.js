@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  calculateSignal,
   connectWebSocket,
   getComparison,
   getQueueHistory,
@@ -8,6 +7,7 @@ import {
   setSpeed as setSpeedApi,
   startSim,
   stopSim,
+  switchMode,
 } from '../services/api'
 
 const DIRECTIONS = ['north', 'south', 'east', 'west']
@@ -56,6 +56,13 @@ export function useTrafficSimulation() {
   const [greenTimes, setGreenTimes] = useState(FIXED_GREEN_TIMES)
   const [avgFixedWait, setAvgFixedWait] = useState(0)
   const [avgAIWait, setAvgAIWait] = useState(0)
+  const [aiActivePhase, setAiActivePhase] = useState(null)
+  const [aiDecisionReason, setAiDecisionReason] = useState('')
+  const [aiCongestionState, setAiCongestionState] = useState({})
+  const [antiGridlockActive, setAntiGridlockActive] = useState(false)
+  const [pedestrianWaiting, setPedestrianWaiting] = useState({})
+  const [emergencyActive, setEmergencyActive] = useState(false)
+  const [neighborPressure, setNeighborPressure] = useState({})
 
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -94,6 +101,13 @@ export function useTrafficSimulation() {
     setGreenTimes(snapshot.greenTimes)
     setAvgFixedWait(snapshot.avgFixedWait)
     setAvgAIWait(snapshot.avgAIWait)
+    setAiActivePhase(snapshot.aiActivePhase ?? null)
+    setAiDecisionReason(snapshot.aiDecisionReason ?? '')
+    setAiCongestionState(snapshot.aiCongestionState ?? {})
+    setAntiGridlockActive(Boolean(snapshot.antiGridlockActive))
+    setPedestrianWaiting(snapshot.pedestrianWaiting ?? {})
+    setEmergencyActive(Boolean(snapshot.emergencyActive))
+    setNeighborPressure(snapshot.neighborPressure ?? {})
 
     modeRef.current = snapshot.mode
     peakHourRef.current = snapshot.peakHour
@@ -114,26 +128,9 @@ export function useTrafficSimulation() {
       return
     }
 
-    try {
-      const response = await calculateSignal({
-        north: sourceQueues.north,
-        south: sourceQueues.south,
-        east: sourceQueues.east,
-        west: sourceQueues.west,
-        is_peak_hour: peakHourRef.current,
-        bus_directions: heavyNorthRef.current ? ['north'] : [],
-      })
-      setGreenTimes({
-        north: response.north,
-        south: response.south,
-        east: response.east,
-        west: response.west,
-      })
-      setError('')
-    } catch (err) {
-      setApiError(err, 'Signal calculation API is unreachable')
-    }
-  }, [setApiError])
+    // In AI mode, green times come from /api/mode and /ws/simulation snapshots,
+    // which are backed by backend/services/ai rather than the legacy calculator.
+  }, [])
 
   const configureStoppedSimulation = useCallback(async (nextMode, nextPeakHour, nextHeavyNorth) => {
     try {
@@ -156,11 +153,18 @@ export function useTrafficSimulation() {
   const setMode = useCallback((nextModeOrUpdater) => {
     const nextMode = readNextValue(nextModeOrUpdater, modeRef.current)
     setModeState(nextMode)
-    setIsRunningState(false)
     modeRef.current = nextMode
-    isRunningRef.current = false
-    void configureStoppedSimulation(nextMode, peakHourRef.current, heavyNorthRef.current)
-  }, [configureStoppedSimulation])
+
+    void (async () => {
+      try {
+        const state = await switchMode(nextMode)
+        applySnapshot(state)
+        setError('')
+      } catch (err) {
+        setApiError(err)
+      }
+    })()
+  }, [applySnapshot, setApiError])
 
   const setPeakHour = useCallback((nextPeakOrUpdater) => {
     const nextPeak = readNextValue(nextPeakOrUpdater, peakHourRef.current)
@@ -336,6 +340,13 @@ export function useTrafficSimulation() {
     avgFixedWait,
     avgAIWait,
     greenTimes,
+    aiActivePhase,
+    aiDecisionReason,
+    aiCongestionState,
+    antiGridlockActive,
+    pedestrianWaiting,
+    emergencyActive,
+    neighborPressure,
     isLoading,
     error,
   }), [
@@ -362,6 +373,13 @@ export function useTrafficSimulation() {
     avgFixedWait,
     avgAIWait,
     greenTimes,
+    aiActivePhase,
+    aiDecisionReason,
+    aiCongestionState,
+    antiGridlockActive,
+    pedestrianWaiting,
+    emergencyActive,
+    neighborPressure,
     isLoading,
     error,
   ])
